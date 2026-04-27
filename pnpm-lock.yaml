@@ -20,6 +20,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@gpt-image-canvas/shared':
+        specifier: workspace:^
+        version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.0.0
         version: 2.0.0(hono@4.12.15)

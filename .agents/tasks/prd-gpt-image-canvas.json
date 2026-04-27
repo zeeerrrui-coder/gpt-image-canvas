@@ -240,7 +240,7 @@
     {
       "id": "US-004",
       "title": "Autosave and restore the tldraw project",
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "US-002",
         "US-003"
@@ -257,13 +257,13 @@
         "Verification: pnpm typecheck and pnpm build pass."
       ],
       "startedAt": "2026-04-27T09:04:55.068960+00:00",
-      "completedAt": null,
-      "updatedAt": "2026-04-27T09:04:55.068960+00:00"
+      "completedAt": "2026-04-27T09:18:55.100801+00:00",
+      "updatedAt": "2026-04-27T09:18:55.100801+00:00"
     },
     {
       "id": "US-005",
       "title": "Implement GPT Image 2 provider and size validation",
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-002"
       ],
@@ -278,7 +278,10 @@
         "Example: valid custom size passes validation and produces the OpenAI-compatible size value.",
         "Negative case: invalid custom size returns 400 before contacting upstream.",
         "Verification: pnpm typecheck and pnpm build pass."
-      ]
+      ],
+      "startedAt": "2026-04-27T09:19:21.983840+00:00",
+      "completedAt": null,
+      "updatedAt": "2026-04-27T09:19:21.983840+00:00"
     },
     {
       "id": "US-006",

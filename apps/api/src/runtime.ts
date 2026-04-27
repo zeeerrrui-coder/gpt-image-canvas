@@ -8,7 +8,7 @@ const packageRoot = resolve(moduleDir, "..");
 const repoRoot = resolve(packageRoot, "../..");
 
 for (const envPath of [resolve(repoRoot, ".env"), resolve(packageRoot, ".env"), resolve(process.cwd(), ".env")]) {
-  loadDotEnv({ path: envPath });
+  loadDotEnv({ path: envPath, quiet: true });
 }
 
 function parsePort(value: string | undefined): number {

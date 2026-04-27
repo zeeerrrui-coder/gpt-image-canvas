@@ -8,6 +8,10 @@
     "sourceMap": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "baseUrl": "../..",
+    "paths": {
+      "@gpt-image-canvas/shared": ["packages/shared/dist/index.d.ts"]
+    },
     "types": ["node"]
   },
   "include": ["src"]

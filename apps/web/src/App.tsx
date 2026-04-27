@@ -85,7 +85,7 @@ function sizeValidationMessage(width: number, height: number): string {
     return "";
   }
 
-  return `宽高必须是 ${MIN_IMAGE_DIMENSION}-${MAX_IMAGE_DIMENSION}px 内的整数，且总像素不超过 4096 x 4096。`;
+  return result.message;
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {

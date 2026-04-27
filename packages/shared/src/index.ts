@@ -72,10 +72,32 @@ export interface ImageSize {
   height: number;
 }
 
-export interface ValidationResult {
-  ok: boolean;
-  message?: string;
-}
+export const CUSTOM_SIZE_PRESET_ID = "custom" as const;
+export type ImageSizePresetId = (typeof SIZE_PRESETS)[number]["id"] | typeof CUSTOM_SIZE_PRESET_ID;
+
+export type ValidationResult =
+  | {
+      ok: true;
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+    };
+
+export type ImageSizeValidationResult =
+  | {
+      ok: true;
+      size: ImageSize;
+      apiValue: string;
+      source: "preset" | "custom";
+      presetId?: ImageSizePresetId;
+    }
+  | {
+      ok: false;
+      code: "invalid_size" | "invalid_size_preset";
+      message: string;
+    };
 
 export const MIN_IMAGE_DIMENSION = 512;
 export const MAX_IMAGE_DIMENSION = 4096;
@@ -83,22 +105,62 @@ export const MAX_TOTAL_PIXELS = 4096 * 4096;
 
 export function validateImageSize(size: ImageSize): ValidationResult {
   if (!Number.isInteger(size.width) || !Number.isInteger(size.height)) {
-    return { ok: false, message: "Width and height must be integers." };
+    return { ok: false, code: "invalid_size", message: "宽度和高度必须是整数。" };
   }
   if (size.width < MIN_IMAGE_DIMENSION || size.height < MIN_IMAGE_DIMENSION) {
-    return { ok: false, message: `Width and height must be at least ${MIN_IMAGE_DIMENSION}px.` };
+    return { ok: false, code: "invalid_size", message: `宽度和高度不能小于 ${MIN_IMAGE_DIMENSION}px。` };
   }
   if (size.width > MAX_IMAGE_DIMENSION || size.height > MAX_IMAGE_DIMENSION) {
-    return { ok: false, message: `Width and height must be at most ${MAX_IMAGE_DIMENSION}px.` };
+    return { ok: false, code: "invalid_size", message: `宽度和高度不能大于 ${MAX_IMAGE_DIMENSION}px。` };
   }
   if (size.width * size.height > MAX_TOTAL_PIXELS) {
-    return { ok: false, message: "Total pixels must not exceed 4096 x 4096." };
+    return { ok: false, code: "invalid_size", message: "总像素不能超过 4096 x 4096。" };
   }
   return { ok: true };
 }
 
 export function sizeToApiValue(size: ImageSize): string {
   return `${size.width}x${size.height}`;
+}
+
+export function validateSceneImageSize(input: {
+  size: ImageSize;
+  sizePresetId?: string | null;
+}): ImageSizeValidationResult {
+  const requestedPresetId = input.sizePresetId?.trim();
+  const requestedPreset =
+    requestedPresetId && requestedPresetId !== CUSTOM_SIZE_PRESET_ID
+      ? SIZE_PRESETS.find((preset) => preset.id === requestedPresetId)
+      : undefined;
+
+  if (requestedPresetId && requestedPresetId !== CUSTOM_SIZE_PRESET_ID && !requestedPreset) {
+    return {
+      ok: false,
+      code: "invalid_size_preset",
+      message: "不支持的场景尺寸预设。"
+    };
+  }
+
+  const sizeValidation = validateImageSize(input.size);
+  if (!sizeValidation.ok) {
+    return {
+      ok: false,
+      code: "invalid_size",
+      message: sizeValidation.message
+    };
+  }
+
+  const matchingPreset = SIZE_PRESETS.find(
+    (preset) => preset.width === input.size.width && preset.height === input.size.height
+  );
+
+  return {
+    ok: true,
+    size: input.size,
+    apiValue: sizeToApiValue(input.size),
+    source: matchingPreset ? "preset" : "custom",
+    presetId: matchingPreset?.id ?? CUSTOM_SIZE_PRESET_ID
+  };
 }
 
 export interface ReferenceImageInput {
