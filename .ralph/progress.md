@@ -218,3 +218,39 @@ Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-171921-59-iter-1.md
   - Keep size validation in `packages/shared` and have API routes use the shared `apiValue` so US-006 can persist/provider-call the same resolved dimensions.
   - Invalid size checks should run before credential checks so negative validation tests never contact upstream, even when credentials are configured.
 ---
+
+## [2026-04-27 17:59:47 +08:00] - US-006: Generate text-to-image assets onto the canvas
+Thread:
+Run: 20260427-173521-1078 (iteration 1)
+Run log: E:/gpt-image-canvas/.ralph/runs/run-20260427-173521-1078-iter-1.log
+Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-173521-1078-iter-1.md
+- Guardrails reviewed: yes
+- No-commit run: false
+- Commit: 4a4147f Implement text-to-image generation
+- Post-commit status: `clean`
+- Verification:
+  - Command: `pnpm typecheck` -> PASS
+  - Command: `pnpm build` -> PASS
+  - Command: `Invoke-WebRequest -Uri http://127.0.0.1:8787/api/images/generate -Method Post ...` -> PASS (returned missing `OPENAI_API_KEY` JSON when credentials were unavailable)
+  - Command: `node --input-type=module` headless Chrome DevTools UI smoke against `http://127.0.0.1:5174/` -> PASS (prompt submit showed missing-key error; canvas and AI panel rendered)
+- Files changed:
+  - .agents/tasks/prd-gpt-image-canvas.json
+  - .ralph/activity.log
+  - .ralph/progress.md
+  - apps/api/src/contracts.ts
+  - apps/api/src/image-generation.ts
+  - apps/api/src/image-provider.ts
+  - apps/api/src/index.ts
+  - apps/api/tsconfig.json
+  - apps/web/src/App.tsx
+- What was implemented
+  - Added `/api/images/generate` persistence that composes style presets into the effective prompt, fans out count requests with backend concurrency limited to 2, saves successful files under `data/assets`, records generation/output rows in SQLite, and returns per-output success or failure.
+  - Added local asset serving through `/api/assets/:id` so generated records can be inserted into tldraw image assets.
+  - Wired the AI panel to submit generation requests, abort/cancel in-flight requests, prevent canceled responses from inserting onto the canvas, and place successful outputs in a centered grid in the current viewport.
+  - Fixed the API dev tsconfig shared path so `pnpm api:dev` resolves the built shared runtime entry instead of a declaration-only file.
+  - Security/performance/regression review: API keys and authorization headers are not logged; asset serving resolves only stored files under `data/assets`; batch generation uses a two-worker limiter; missing credentials still produce the expected runtime error; project load/save and build/typecheck still pass.
+- **Learnings for future iterations:**
+  - `tsx watch` honors the API tsconfig path at runtime; mapping shared to `dist/index.d.ts` breaks API dev even though typecheck can pass. Use the built shared entry path without an extension.
+  - tldraw image insertion can use stable `asset:` and `shape:` IDs with `editor.createAssets`, `editor.createShapes`, and `editor.getViewportPageBounds().center` for viewport-centered placement.
+  - Browser verification can use a headless Chrome DevTools protocol smoke when live credentials are missing; this validates the real Vite UI path and the missing-key API response without exposing secrets.
+---
