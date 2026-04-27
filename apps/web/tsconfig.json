@@ -1,13 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "declarationMap": true,
     "sourceMap": true,
+    "jsx": "react-jsx",
     "module": "ESNext",
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    "types": ["vite/client", "node"]
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts", "tailwind.config.ts"]
 }

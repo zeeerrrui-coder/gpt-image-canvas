@@ -193,7 +193,7 @@
     {
       "id": "US-002",
       "title": "Build Hono API with SQLite persistence",
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "US-001"
       ],
@@ -210,13 +210,13 @@
         "Verification: pnpm typecheck and pnpm build pass."
       ],
       "startedAt": "2026-04-27T08:15:41.092106+00:00",
-      "completedAt": null,
-      "updatedAt": "2026-04-27T08:15:41.092106+00:00"
+      "completedAt": "2026-04-27T08:29:12.320013+00:00",
+      "updatedAt": "2026-04-27T08:29:12.320013+00:00"
     },
     {
       "id": "US-003",
       "title": "Create React tldraw workspace shell",
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-001",
         "US-002"
@@ -232,7 +232,10 @@
         "Negative case: an empty prompt disables generation or shows a clear Chinese validation message.",
         "Browser verification: run the app, load the workspace, confirm tldraw canvas and panel render without overlap.",
         "Verification: pnpm typecheck and pnpm build pass."
-      ]
+      ],
+      "startedAt": "2026-04-27T08:54:43.603864+00:00",
+      "completedAt": null,
+      "updatedAt": "2026-04-27T08:54:43.603864+00:00"
     },
     {
       "id": "US-004",
