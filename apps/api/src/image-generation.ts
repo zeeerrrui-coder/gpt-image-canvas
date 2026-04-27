@@ -11,7 +11,13 @@ import type {
   OutputFormat
 } from "./contracts.js";
 import { db } from "./database.js";
-import { ProviderError, type ImageProvider, type ImageProviderInput, type ProviderImage } from "./image-provider.js";
+import {
+  ProviderError,
+  type EditImageProviderInput,
+  type ImageProvider,
+  type ImageProviderInput,
+  type ProviderImage
+} from "./image-provider.js";
 import { runtimePaths } from "./runtime.js";
 import { assets, generationOutputs, generationRecords } from "./schema.js";
 
@@ -31,6 +37,11 @@ interface BatchOutputResult {
   error?: string;
 }
 
+type PersistedGenerationInput = ImageProviderInput & {
+  mode: "generate" | "edit";
+  referenceAssetId?: string;
+};
+
 const mimeTypes: Record<OutputFormat, string> = {
   jpeg: "image/jpeg",
   png: "image/png",
@@ -44,7 +55,37 @@ export async function runTextToImageGeneration(input: ImageProviderInput, provid
     async () => generateSingleOutput(input, provider, signal)
   );
 
-  const record = saveGenerationRecord(input, outputs);
+  const record = saveGenerationRecord(
+    {
+      ...input,
+      mode: "generate"
+    },
+    outputs
+  );
+
+  return {
+    record
+  };
+}
+
+export async function runReferenceImageGeneration(
+  input: EditImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<GenerationResponse> {
+  const outputs = await mapWithConcurrency(
+    Array.from({ length: input.count }, (_, index) => index),
+    BATCH_CONCURRENCY,
+    async () => editSingleOutput(input, provider, signal)
+  );
+
+  const record = saveGenerationRecord(
+    {
+      ...input,
+      mode: "edit"
+    },
+    outputs
+  );
 
   return {
     record
@@ -125,6 +166,45 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
   }
 }
 
+async function editSingleOutput(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+  const outputId = randomUUID();
+
+  try {
+    throwIfAborted(signal);
+    const result = await provider.edit(
+      {
+        ...input,
+        count: 1
+      },
+      signal
+    );
+    throwIfAborted(signal);
+
+    const providerImage = result.images[0];
+    if (!providerImage) {
+      throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
+    }
+
+    const asset = await saveProviderImage(providerImage, input, signal);
+
+    return {
+      id: outputId,
+      status: "succeeded",
+      asset
+    };
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw error;
+    }
+
+    return {
+      id: outputId,
+      status: "failed",
+      error: errorToMessage(error)
+    };
+  }
+}
+
 async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, signal?: AbortSignal): Promise<GeneratedAsset> {
   const assetId = randomUUID();
   const fileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
@@ -158,7 +238,7 @@ async function downloadProviderImage(url: string | undefined, signal?: AbortSign
   return Buffer.from(await response.arrayBuffer());
 }
 
-function saveGenerationRecord(input: ImageProviderInput, outputs: BatchOutputResult[]): GenerationRecord {
+function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
   const createdAt = new Date().toISOString();
   const generationId = randomUUID();
   const successCount = outputs.filter((output) => output.status === "succeeded").length;
@@ -180,7 +260,7 @@ function saveGenerationRecord(input: ImageProviderInput, outputs: BatchOutputRes
       count: input.count,
       status,
       error,
-      referenceAssetId: null,
+      referenceAssetId: input.referenceAssetId ?? null,
       createdAt
     })
     .run();
@@ -214,7 +294,7 @@ function saveGenerationRecord(input: ImageProviderInput, outputs: BatchOutputRes
 
   return {
     id: generationId,
-    mode: "generate",
+    mode: input.mode,
     prompt: input.originalPrompt,
     effectivePrompt: input.prompt,
     presetId: input.presetId,
@@ -224,6 +304,7 @@ function saveGenerationRecord(input: ImageProviderInput, outputs: BatchOutputRes
     count: input.count,
     status,
     error,
+    referenceAssetId: input.referenceAssetId,
     createdAt,
     outputs: outputs.map(toGenerationOutput)
   };

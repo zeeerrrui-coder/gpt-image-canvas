@@ -27,7 +27,7 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { readStoredAsset, runTextToImageGeneration } from "./image-generation.js";
+import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
 import { getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { serverConfig } from "./runtime.js";
 
@@ -151,7 +151,7 @@ app.post("/api/images/edit", async (c) => {
 
   try {
     const provider = createOpenAICompatibleImageProvider(providerConfig.config);
-    return c.json(await provider.edit(parsed.value, c.req.raw.signal));
+    return c.json(await runReferenceImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -227,6 +227,15 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
   }
 
   const fileName = input.referenceImage.fileName;
+  const referenceAssetId = parseOptionalString(input.referenceAssetId);
+
+  if (referenceAssetId && !getStoredAssetFile(referenceAssetId)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "找不到可记录的本地参考图像资源。")
+    };
+  }
+
   const referenceImage: ReferenceImageInput = {
     dataUrl,
     fileName: typeof fileName === "string" && fileName.trim() ? fileName.trim() : undefined
@@ -236,7 +245,8 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
     ok: true,
     value: {
       ...base.value,
-      referenceImage
+      referenceImage,
+      referenceAssetId
     }
   };
 }

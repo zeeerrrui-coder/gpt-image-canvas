@@ -19,6 +19,7 @@ export interface ImageProviderInput {
 
 export interface EditImageProviderInput extends ImageProviderInput {
   referenceImage: ReferenceImageInput;
+  referenceAssetId?: string;
 }
 
 export interface ProviderImage {
@@ -64,6 +65,7 @@ interface OpenAIImageResponse {
 }
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export function getOpenAICompatibleProviderConfig():
   | {
@@ -213,6 +215,9 @@ function dataUrlToBlob(dataUrl: string): { blob: Blob; extension: string } {
   const mimeType = match[1];
   const extension = mimeType.split("/")[1] || "png";
   const bytes = Buffer.from(match[2], "base64");
+  if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 20MB。", 400);
+  }
 
   return {
     blob: new Blob([bytes], { type: mimeType }),
