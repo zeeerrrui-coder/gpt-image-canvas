@@ -1034,6 +1034,10 @@ export function App() {
 
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
+    if (!editor.user.getIsSnapMode()) {
+      editor.user.updateUserPreferences({ isSnapMode: true });
+    }
+
     const updateReferenceSelection = (): void => {
       if (generationModeRef.current !== "reference") {
         return;
