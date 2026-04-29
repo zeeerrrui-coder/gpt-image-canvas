@@ -53,6 +53,7 @@ export class ProviderError extends Error {
 
 export interface OpenAIImageProviderConfig {
   apiKey: string;
+  baseURL?: string;
   timeoutMs: number;
 }
 
@@ -85,10 +86,13 @@ export function getOpenAIImageProviderConfig():
     };
   }
 
+  const baseURL = process.env.OPENAI_BASE_URL?.trim();
+
   return {
     ok: true,
     config: {
       apiKey,
+      baseURL: baseURL || undefined,
       timeoutMs: parsePositiveInteger(process.env.OPENAI_IMAGE_TIMEOUT_MS, DEFAULT_OPENAI_IMAGE_TIMEOUT_MS)
     }
   };
@@ -104,6 +108,7 @@ class OpenAIImageProvider implements ImageProvider {
   constructor(config: OpenAIImageProviderConfig) {
     this.client = new OpenAI({
       apiKey: config.apiKey,
+      baseURL: config.baseURL,
       timeout: config.timeoutMs
     });
   }

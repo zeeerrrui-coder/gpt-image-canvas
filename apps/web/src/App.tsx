@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Cloud,
+  Copy,
   Download,
   ImageIcon,
   Loader2,
@@ -368,6 +369,31 @@ function createTemporaryGenerationRecord(input: {
 function promptExcerpt(promptValue: string): string {
   const compact = promptValue.replace(/\s+/gu, " ").trim();
   return compact.length > 72 ? `${compact.slice(0, 72)}...` : compact;
+}
+
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.readOnly = true;
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.top = "0";
+  document.body.append(textArea);
+  textArea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("Copy command was not accepted.");
+    }
+  } finally {
+    textArea.remove();
+  }
 }
 
 function formatCreatedTime(value: string): string {
@@ -1566,6 +1592,24 @@ export function App() {
     setGenerationMessage("已打开原始资源下载。");
   }
 
+  async function copyHistoryPrompt(record: GenerationRecord): Promise<void> {
+    const promptText = record.prompt.trim();
+    setGenerationError("");
+    setGenerationMessage("");
+
+    if (!promptText) {
+      setGenerationError("这条历史记录没有可复制的提示词。");
+      return;
+    }
+
+    try {
+      await writeClipboardText(promptText);
+      setGenerationMessage("已复制提示词。");
+    } catch {
+      setGenerationError("复制失败，请手动复制提示词。");
+    }
+  }
+
   function cancelGeneration(requestId: number): void {
     const task = activeGenerationsRef.current.get(requestId);
     if (!task) {
@@ -1976,6 +2020,16 @@ export function App() {
                       </div>
 
                       <div className="history-actions">
+                        <button
+                          aria-label={`复制历史提示词：${excerpt}`}
+                          className="history-icon-action"
+                          type="button"
+                          data-testid="history-copy-prompt"
+                          title="复制提示词"
+                          onClick={() => void copyHistoryPrompt(record)}
+                        >
+                          <Copy className="size-4" aria-hidden="true" />
+                        </button>
                         <button
                           aria-label={`定位历史记录：${excerpt}`}
                           className="history-icon-action"

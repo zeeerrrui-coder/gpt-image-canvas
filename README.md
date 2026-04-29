@@ -29,7 +29,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official OpenAI Image API with `gpt-image-2`; custom provider base URLs are not supported.
+Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`.
 
 Open the web app at `http://localhost:5173`.
 
@@ -130,6 +130,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 ## Troubleshooting
 
 - Missing or empty `OPENAI_API_KEY`: the app still boots; text-to-image and reference-image requests return a missing-key JSON error. Add a valid key to `.env` and restart the API or Docker container.
+- Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container. The endpoint must be OpenAI-compatible and support the configured image model.
 - Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access `gpt-image-2`.
 - High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` in `.env` if needed.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime, or run Vite on another port when prompted.
