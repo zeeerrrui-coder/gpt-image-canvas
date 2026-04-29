@@ -1,5 +1,5 @@
 import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError, toFile } from "openai";
-import type { ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, ImagesResponse } from "openai/resources/images";
+import type { Image, ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, ImagesResponse } from "openai/resources/images";
 import {
   IMAGE_MODEL,
   type ImageQuality,
@@ -60,6 +60,7 @@ export interface OpenAIImageProviderConfig {
 
 const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
+const MAX_PROVIDER_IMAGE_BYTES = 100 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 
 type FlexibleImageGenerateParams = Omit<ImageGenerateParamsNonStreaming, "size"> & {
@@ -133,7 +134,7 @@ class OpenAIImageProvider implements ImageProvider {
         { signal }
       );
 
-      return normalizeProviderResponse(response, input.sizeApiValue, this.config.model);
+      return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
     } catch (error) {
       throw toProviderError(error);
     }
@@ -155,7 +156,7 @@ class OpenAIImageProvider implements ImageProvider {
         { signal }
       );
 
-      return normalizeProviderResponse(response, input.sizeApiValue, this.config.model);
+      return await normalizeProviderResponse(response, input.sizeApiValue, this.config.model, signal);
     } catch (error) {
       throw toProviderError(error);
     }
@@ -209,14 +210,17 @@ function isAbortError(error: unknown): error is Error {
   return error instanceof APIUserAbortError || (error instanceof DOMException && error.name === "AbortError");
 }
 
-function normalizeProviderResponse(response: ImagesResponse, sizeApiValue: string, model: string): ProviderResult {
+async function normalizeProviderResponse(
+  response: ImagesResponse,
+  sizeApiValue: string,
+  model: string,
+  signal?: AbortSignal
+): Promise<ProviderResult> {
   if (!Array.isArray(response.data) || response.data.length === 0) {
     throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务没有返回图像结果。", 502);
   }
 
-  const images = response.data.map((item) => ({
-    b64Json: typeof item.b64_json === "string" ? item.b64_json : ""
-  }));
+  const images = await Promise.all(response.data.map((item) => providerImageFromResponseItem(item, signal)));
 
   if (images.some((image) => !image.b64Json)) {
     throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务没有返回 base64 图像数据。", 502);
@@ -227,6 +231,113 @@ function normalizeProviderResponse(response: ImagesResponse, sizeApiValue: strin
     size: sizeApiValue,
     images
   };
+}
+
+async function providerImageFromResponseItem(item: Image, signal?: AbortSignal): Promise<ProviderImage> {
+  if (typeof item.b64_json === "string" && item.b64_json) {
+    return {
+      b64Json: item.b64_json
+    };
+  }
+
+  if (typeof item.url === "string" && item.url) {
+    return {
+      b64Json: await downloadProviderImageUrl(item.url, signal)
+    };
+  }
+
+  return {
+    b64Json: ""
+  };
+}
+
+async function downloadProviderImageUrl(url: string, signal?: AbortSignal): Promise<string> {
+  const parsedUrl = parseProviderImageUrl(url);
+  if (!parsedUrl) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务返回的图片 URL 不受支持。", 502);
+  }
+
+  if (parsedUrl.protocol === "data:") {
+    return dataUrlToBase64(url);
+  }
+
+  const response = await fetch(parsedUrl, { signal });
+  if (!response.ok) {
+    throw new ProviderError("upstream_failure", "OpenAI 图像 URL 下载失败。", providerHttpStatus(response.status));
+  }
+
+  if (!isProviderImageContentType(response.headers.get("content-type"))) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像 URL 返回的内容不是图片。", 502);
+  }
+
+  const contentLength = parseContentLength(response.headers.get("content-length"));
+  if (contentLength !== undefined && contentLength > MAX_PROVIDER_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像 URL 返回的文件过大。", 502);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > MAX_PROVIDER_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像 URL 返回的文件过大。", 502);
+  }
+  if (!isProviderImageBytes(bytes)) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像 URL 返回的内容不是可识别的图片。", 502);
+  }
+
+  return bytes.toString("base64");
+}
+
+function parseProviderImageUrl(url: string): URL | undefined {
+  try {
+    const parsedUrl = new URL(url);
+    return parsedUrl.protocol === "https:" || parsedUrl.protocol === "http:" || parsedUrl.protocol === "data:"
+      ? parsedUrl
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function dataUrlToBase64(url: string): string {
+  const match = /^data:image\/[^;,]+;base64,(.+)$/u.exec(url);
+  if (!match) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务返回的 data URL 不受支持。", 502);
+  }
+
+  return match[1];
+}
+
+function isProviderImageContentType(value: string | null): boolean {
+  if (!value) {
+    return true;
+  }
+
+  const contentType = value.split(";")[0]?.trim().toLowerCase();
+  return Boolean(contentType?.startsWith("image/") || contentType === "application/octet-stream");
+}
+
+function isProviderImageBytes(bytes: Buffer): boolean {
+  return isPng(bytes) || isJpeg(bytes) || isWebp(bytes);
+}
+
+function isPng(bytes: Buffer): boolean {
+  return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+}
+
+function isJpeg(bytes: Buffer): boolean {
+  return bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
+}
+
+function isWebp(bytes: Buffer): boolean {
+  return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+}
+
+function parseContentLength(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 async function dataUrlToFile(input: ReferenceImageInput): Promise<File> {

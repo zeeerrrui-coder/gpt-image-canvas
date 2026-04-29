@@ -6,6 +6,8 @@ export type ImageQuality = "auto" | "low" | "medium" | "high";
 export type OutputFormat = "png" | "jpeg" | "webp";
 export type GenerationStatus = "pending" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
 export type OutputStatus = "succeeded" | "failed";
+export type CloudStorageProvider = "cos";
+export type AssetCloudUploadStatus = "uploaded" | "failed";
 
 export interface SizePreset {
   id: string;
@@ -202,6 +204,14 @@ export interface GeneratedAsset {
   mimeType: string;
   width: number;
   height: number;
+  cloud?: GeneratedAssetCloudInfo;
+}
+
+export interface GeneratedAssetCloudInfo {
+  provider: CloudStorageProvider;
+  status: AssetCloudUploadStatus;
+  lastError?: string;
+  uploadedAt?: string;
 }
 
 export interface GenerationOutput {
@@ -248,6 +258,45 @@ export interface AppConfig {
   qualities: ImageQuality[];
   outputFormats: OutputFormat[];
   counts: readonly GenerationCount[];
+}
+
+export interface MaskedSecret {
+  hasSecret: boolean;
+  value?: string;
+}
+
+export interface CosStorageConfigView {
+  secretId: string;
+  secretKey: MaskedSecret;
+  bucket: string;
+  region: string;
+  keyPrefix: string;
+}
+
+export interface StorageConfigResponse {
+  enabled: boolean;
+  provider: CloudStorageProvider;
+  cos: CosStorageConfigView;
+}
+
+export interface SaveCosStorageConfig {
+  secretId: string;
+  secretKey?: string;
+  preserveSecret?: boolean;
+  bucket: string;
+  region: string;
+  keyPrefix: string;
+}
+
+export interface SaveStorageConfigRequest {
+  enabled: boolean;
+  provider: CloudStorageProvider;
+  cos?: SaveCosStorageConfig;
+}
+
+export interface StorageTestResult {
+  ok: boolean;
+  message: string;
 }
 
 export function composePrompt(prompt: string, presetId: string): string {

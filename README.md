@@ -2,11 +2,19 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2.
+Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.1.0` adds Tencent Cloud COS backup, PackyCode / `gpt-image` response compatibility, and workflow polish for generated assets.
 
 ## Preview
 
 ![GPT Image Canvas preview](docs/assets/app-preview.png)
+
+## Highlights
+
+- AI canvas powered by tldraw with prompt-to-image and reference-image generation.
+- Local-first storage for generated images and project snapshots.
+- Optional Tencent Cloud COS backup for newly generated images.
+- Generation history with locate, rerun, download, and cloud upload status.
+- OpenAI-compatible image endpoint support, including PackyCode / `gpt-image` style responses.
 
 ## Requirements
 
@@ -37,6 +45,26 @@ Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official
 
 Open the web app at `http://localhost:5173`.
 
+## Upgrading To v0.1.0
+
+Back up local runtime data before upgrading:
+
+Windows PowerShell:
+
+```powershell
+Copy-Item -Recurse data data-backup-before-v0.1.0
+docker compose up --build
+```
+
+macOS/Linux:
+
+```sh
+cp -R data data-backup-before-v0.1.0
+docker compose up --build
+```
+
+Make sure the web app and API are rebuilt together. If you use Docker, prefer `http://localhost:8787` and avoid running `pnpm dev` against the same `data/` directory at the same time.
+
 ## Codex Users
 
 Codex can work directly from this repository. After cloning, let it read `AGENTS.md`, then ask it to install dependencies and run checks with the pinned package manager:
@@ -59,6 +87,8 @@ For UI changes, have Codex run `pnpm dev` and verify the Vite app in a browser a
 - Web: Vite on `http://localhost:5173`, proxying `/api` to the API service. The dev server uses a strict port so a stale app on `5173` cannot hide that this project failed to start.
 
 Use the right-side AI panel to enter a prompt, choose a scene size, and generate. When one image shape is selected on the canvas, the generate button switches to reference-image generation. The canvas autosaves to the local API after edits, and recent generation history provides locate, rerun, and download actions for stored outputs.
+
+The AI panel also includes a cloud storage button. Enable COS there when you want new generated images to be written locally and uploaded to COS.
 
 Before completing changes, run:
 
@@ -117,11 +147,29 @@ NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 
 `OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
 
+## Tencent Cloud COS Backup
+
+Generated images are always saved locally first. When COS is enabled from the in-app cloud storage dialog, new generated images are also uploaded to:
+
+```text
+<key-prefix>/YYYY/MM/<assetId>.<ext>
+```
+
+The default COS form values are read from `.env`:
+
+- `COS_DEFAULT_BUCKET`
+- `COS_DEFAULT_REGION`
+- `COS_DEFAULT_KEY_PREFIX`
+
+Saving COS settings performs a test upload and delete before persisting the configuration. `SecretKey` is stored in the local SQLite database because the app has no server-side account system yet, but GET responses only return a masked secret indicator.
+
+Cloud upload failures do not fail image generation. The asset remains available locally, and the UI marks the history item with the cloud backup failure.
+
 ## Local Data
 
 Runtime state is stored under `DATA_DIR`, which defaults to `./data` locally and `/app/data` in Docker. The directory contains:
 
-- `gpt-image-canvas.sqlite` for the default project, generation history, and asset metadata.
+- `gpt-image-canvas.sqlite` for the default project, generation history, asset metadata, cloud upload metadata, and optional COS settings.
 - `assets/` for generated image files.
 
 The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so projects and generated assets survive container rebuilds. Do not commit `.env`, `data/`, generated images, SQLite files, or build output.
@@ -129,6 +177,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 ## Security / Privacy Notes
 
 - Secrets are read only from `.env` or runtime environment variables. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, or logs that include secret values.
+- COS SecretKey values saved from the UI are stored locally in SQLite and are masked by the settings API. Treat `data/gpt-image-canvas.sqlite` as sensitive when COS is configured.
 - Prompts, project state, generated assets, and SQLite data are local runtime data under `DATA_DIR`. Treat `data/` as private unless you intentionally export specific assets.
 - Before publishing a branch, check `git status --short` and confirm only source, docs, and intended metadata are staged. `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated images, SQLite databases, and build output should stay untracked.
 - If a real API key was ever committed, rotate that key first. Git ignore rules prevent future leaks, but they do not remove secrets from existing Git history.
@@ -143,6 +192,8 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 - Docker build cannot pull the Node base image: use a locally cached image with `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` on macOS/Linux or `$env:NODE_IMAGE = 'node:23-bullseye-slim'` followed by `docker compose up --build` in Windows PowerShell, or restore Docker Hub access and rerun `docker compose up --build`.
 - Docker config output includes `.env` values by default. Use `docker compose config --quiet --no-env-resolution` for validation when real credentials are present, and do not share expanded config output.
 - SQLite `SQLITE_IOERR_SHMOPEN` in Docker: keep the Compose defaults `SQLITE_JOURNAL_MODE=DELETE` and `SQLITE_LOCKING_MODE=EXCLUSIVE`, rebuild, and make sure no local API process is using the same `data/` database at the same time.
+- SQLite `SQLITE_CORRUPT`: stop all app processes, back up `data/`, and restore from backup or remove the SQLite files to let the app create a clean database. Generated image files under `data/assets/` can be kept.
+- `/api/project` returns 400 while autosaving: check Docker logs for `Project save rejected`. Large canvases are supported up to 100 MB snapshots; imported data URL images can still make snapshots very large.
 - Stale or unwanted local state: stop the app and remove files under `data/`. This deletes local project state, history, and generated assets.
 
 ## License

@@ -54,7 +54,29 @@ CREATE TABLE IF NOT EXISTS assets (
   mime_type TEXT NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
+  cloud_provider TEXT,
+  cloud_bucket TEXT,
+  cloud_region TEXT,
+  cloud_object_key TEXT,
+  cloud_status TEXT,
+  cloud_error TEXT,
+  cloud_uploaded_at TEXT,
+  cloud_etag TEXT,
+  cloud_request_id TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_configs (
+  id TEXT PRIMARY KEY NOT NULL,
+  provider TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  secret_id TEXT,
+  secret_key TEXT,
+  bucket TEXT,
+  region TEXT,
+  key_prefix TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS generation_records (
@@ -88,8 +110,27 @@ CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_ou
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
 `);
 
+ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");
+ensureColumn("assets", "cloud_bucket", "cloud_bucket TEXT");
+ensureColumn("assets", "cloud_region", "cloud_region TEXT");
+ensureColumn("assets", "cloud_object_key", "cloud_object_key TEXT");
+ensureColumn("assets", "cloud_status", "cloud_status TEXT");
+ensureColumn("assets", "cloud_error", "cloud_error TEXT");
+ensureColumn("assets", "cloud_uploaded_at", "cloud_uploaded_at TEXT");
+ensureColumn("assets", "cloud_etag", "cloud_etag TEXT");
+ensureColumn("assets", "cloud_request_id", "cloud_request_id TEXT");
+
 export const db = drizzle(sqlite, { schema });
 
 export function closeDatabase(): void {
   sqlite.close();
+}
+
+function ensureColumn(tableName: string, columnName: string, definition: string): void {
+  const columns = sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
 }

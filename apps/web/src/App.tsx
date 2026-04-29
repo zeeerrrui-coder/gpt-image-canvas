@@ -54,7 +54,10 @@ import {
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
+  type SaveStorageConfigRequest,
   type SizePreset,
+  type StorageConfigResponse,
+  type StorageTestResult,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
 
@@ -68,6 +71,15 @@ const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
 } satisfies Partial<TldrawOptions>;
+
+const defaultStorageConfigForm: StorageConfigFormState = {
+  enabled: false,
+  secretId: "",
+  secretKey: "",
+  bucket: "source-1253253332",
+  region: "ap-nanjing",
+  keyPrefix: "gpt-image-canvas/assets"
+};
 
 const canvasAssetStore: TLAssetStore = {
   async upload(_asset, file) {
@@ -107,7 +119,7 @@ type PanelStatusTone = "progress" | "success" | "warning" | "error";
 interface PanelStatus {
   tone: PanelStatusTone;
   message: string;
-  testId: "generation-progress" | "generation-message" | "validation-message" | "generation-error";
+  testId: "generation-progress" | "generation-message" | "generation-warning" | "validation-message" | "generation-error";
 }
 
 interface GenerationSubmitInput {
@@ -148,6 +160,15 @@ interface ActiveGenerationTask {
   temporaryRecordId: string;
   controller: AbortController;
   placeholderSet: ActiveGenerationPlaceholders;
+}
+
+interface StorageConfigFormState {
+  enabled: boolean;
+  secretId: string;
+  secretKey: string;
+  bucket: string;
+  region: string;
+  keyPrefix: string;
 }
 
 type ReferenceSelection =
@@ -335,6 +356,14 @@ function firstDownloadableAsset(record: GenerationRecord): GeneratedAsset | unde
 
 function successfulOutputCount(record: GenerationRecord): number {
   return record.outputs.filter((output) => output.status === "succeeded" && output.asset).length;
+}
+
+function cloudFailureCount(record: GenerationRecord): number {
+  return record.outputs.filter((output) => output.asset?.cloud?.status === "failed").length;
+}
+
+function firstCloudFailureMessage(record: GenerationRecord): string | undefined {
+  return record.outputs.find((output) => output.asset?.cloud?.status === "failed")?.asset?.cloud?.lastError;
 }
 
 function generationModeToRecordMode(mode: GenerationMode): GenerationRecord["mode"] {
@@ -925,6 +954,39 @@ async function readErrorMessage(response: Response): Promise<string> {
   }
 }
 
+function storageConfigToForm(config: StorageConfigResponse | null): StorageConfigFormState {
+  if (!config) {
+    return defaultStorageConfigForm;
+  }
+
+  return {
+    enabled: config.enabled,
+    secretId: config.cos.secretId,
+    secretKey: config.cos.secretKey.value ?? "",
+    bucket: config.cos.bucket,
+    region: config.cos.region,
+    keyPrefix: config.cos.keyPrefix
+  };
+}
+
+function storageConfigRequestBody(
+  form: StorageConfigFormState,
+  options: { preserveSecret: boolean; forceEnabled?: boolean }
+): SaveStorageConfigRequest {
+  return {
+    enabled: options.forceEnabled ?? form.enabled,
+    provider: "cos",
+    cos: {
+      secretId: form.secretId.trim(),
+      secretKey: options.preserveSecret ? undefined : form.secretKey,
+      preserveSecret: options.preserveSecret,
+      bucket: form.bucket.trim(),
+      region: form.region.trim(),
+      keyPrefix: form.keyPrefix.trim()
+    }
+  };
+}
+
 function requestGenerationNotificationPermission(): void {
   if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "default") {
     return;
@@ -1020,10 +1082,19 @@ export function App() {
   const [saveError, setSaveError] = useState("");
   const [generationError, setGenerationError] = useState("");
   const [generationMessage, setGenerationMessage] = useState("");
+  const [generationWarning, setGenerationWarning] = useState("");
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
+  const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
+  const [storageForm, setStorageForm] = useState<StorageConfigFormState>(defaultStorageConfigForm);
+  const [storageSecretTouched, setStorageSecretTouched] = useState(false);
+  const [storageError, setStorageError] = useState("");
+  const [storageMessage, setStorageMessage] = useState("");
+  const [isStorageSaving, setIsStorageSaving] = useState(false);
+  const [isStorageTesting, setIsStorageTesting] = useState(false);
   const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(missingReferenceSelection);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -1075,6 +1146,14 @@ export function App() {
       };
     }
 
+    if (generationWarning) {
+      return {
+        tone: "warning",
+        message: generationWarning,
+        testId: "generation-warning"
+      };
+    }
+
     if (generationMessage) {
       return {
         tone: "success",
@@ -1084,7 +1163,15 @@ export function App() {
     }
 
     return null;
-  }, [activeGenerationCount, generationError, generationMessage, isGenerating, shouldShowValidation, validationMessage]);
+  }, [
+    activeGenerationCount,
+    generationError,
+    generationMessage,
+    generationWarning,
+    isGenerating,
+    shouldShowValidation,
+    validationMessage
+  ]);
 
   useEffect(() => {
     return () => {
@@ -1140,6 +1227,40 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadStorageConfig(): Promise<void> {
+      try {
+        const response = await fetch("/api/storage/config", {
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          throw new Error(`Storage config load failed with ${response.status}`);
+        }
+
+        const config = (await response.json()) as StorageConfigResponse;
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setStorageConfig(config);
+        setStorageForm(storageConfigToForm(config));
+        setStorageSecretTouched(false);
+      } catch {
+        if (!controller.signal.aborted) {
+          setStorageError("Unable to load cloud storage settings.");
+        }
+      }
+    }
+
+    void loadStorageConfig();
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_DRAWER_MEDIA_QUERY);
     const updateDrawerMode = (): void => {
       setIsMobileDrawer(mediaQuery.matches);
@@ -1159,6 +1280,102 @@ export function App() {
       canvasShellRef.current?.focus({ preventScroll: true });
     });
   }, []);
+
+  function openStorageDialog(): void {
+    setStorageForm(storageConfigToForm(storageConfig));
+    setStorageSecretTouched(false);
+    setStorageError("");
+    setStorageMessage("");
+    setIsStorageDialogOpen(true);
+  }
+
+  function closeStorageDialog(): void {
+    setIsStorageDialogOpen(false);
+    setStorageError("");
+    setStorageMessage("");
+  }
+
+  function updateStorageForm(patch: Partial<StorageConfigFormState>): void {
+    setStorageForm((current) => ({
+      ...current,
+      ...patch
+    }));
+    setStorageError("");
+    setStorageMessage("");
+  }
+
+  async function testStorageSettings(): Promise<void> {
+    setIsStorageTesting(true);
+    setStorageError("");
+    setStorageMessage("");
+
+    try {
+      const response = await fetch("/api/storage/config/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(
+          storageConfigRequestBody(storageForm, {
+            preserveSecret: !storageSecretTouched && Boolean(storageConfig?.cos.secretKey.hasSecret),
+            forceEnabled: true
+          })
+        )
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const result = (await response.json()) as StorageTestResult;
+      if (!result.ok) {
+        setStorageError(result.message);
+        return;
+      }
+
+      setStorageMessage(result.message);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : "Cloud storage test failed.");
+    } finally {
+      setIsStorageTesting(false);
+    }
+  }
+
+  async function saveStorageSettings(): Promise<void> {
+    setIsStorageSaving(true);
+    setStorageError("");
+    setStorageMessage("");
+
+    try {
+      const response = await fetch("/api/storage/config", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(
+          storageConfigRequestBody(storageForm, {
+            preserveSecret: !storageSecretTouched && Boolean(storageConfig?.cos.secretKey.hasSecret)
+          })
+        )
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const config = (await response.json()) as StorageConfigResponse;
+      setStorageConfig(config);
+      setStorageForm(storageConfigToForm(config));
+      setStorageSecretTouched(false);
+      setStorageMessage("Cloud storage settings saved.");
+      setGenerationMessage(config.enabled ? "Cloud storage is enabled." : "Cloud storage is disabled.");
+      setGenerationWarning("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : "Cloud storage settings could not be saved.");
+    } finally {
+      setIsStorageSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!isMobileDrawer || !isAiPanelOpen) {
@@ -1336,6 +1553,7 @@ export function App() {
     setHasSubmitted(false);
     setGenerationError("");
     setGenerationMessage("");
+    setGenerationWarning("");
   }
 
   async function executeGeneration(
@@ -1347,6 +1565,7 @@ export function App() {
     setHasSubmitted(true);
     setGenerationError("");
     setGenerationMessage("");
+    setGenerationWarning("");
 
     const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height);
     if (inputValidationMessage) {
@@ -1435,12 +1654,17 @@ export function App() {
       const failedCount =
         body.record.outputs.filter((output) => output.status === "failed").length +
         Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
+      const cloudFailedCount = cloudFailureCount(body.record);
       if (insertedCount > 0) {
-        setGenerationMessage(
-          failedCount > 0
-            ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-            : `已向画布插入 ${insertedCount} 张图像。`
-        );
+        if (cloudFailedCount > 0) {
+          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像，本地已保存，${cloudFailedCount} 张云端上传失败。`);
+        } else {
+          setGenerationMessage(
+            failedCount > 0
+              ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
+              : `已向画布插入 ${insertedCount} 张图像。`
+          );
+        }
         showGenerationCompleteNotification(body.record, insertedCount, failedCount);
       } else {
         setGenerationError(body.record.error || "没有可插入的成功图像。");
@@ -1499,11 +1723,13 @@ export function App() {
     setReferenceSelection(missingReferenceSelection);
     setGenerationError("");
     setGenerationMessage("");
+    setGenerationWarning("");
   }
 
   function locateHistoryRecord(record: GenerationRecord): void {
     setGenerationError("");
     setGenerationMessage("");
+    setGenerationWarning("");
 
     const editor = editorRef.current;
     if (!editor) {
@@ -1587,6 +1813,7 @@ export function App() {
 
   function downloadHistoryRecord(record: GenerationRecord): void {
     const asset = firstDownloadableAsset(record);
+    setGenerationWarning("");
     if (!asset) {
       setGenerationError("这条历史记录没有可下载的本地资源。");
       return;
@@ -1600,6 +1827,7 @@ export function App() {
     const promptText = record.prompt.trim();
     setGenerationError("");
     setGenerationMessage("");
+    setGenerationWarning("");
 
     if (!promptText) {
       setGenerationError("这条历史记录没有可复制的提示词。");
@@ -1635,6 +1863,7 @@ export function App() {
     );
     setGenerationError("");
     setGenerationMessage("已取消本次生成。");
+    setGenerationWarning("");
   }
 
   return (
@@ -1710,6 +1939,20 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                aria-label="云存储设置"
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
+                  storageConfig?.enabled
+                    ? "border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100"
+                    : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900"
+                }`}
+                data-testid="storage-settings-button"
+                title={storageConfig?.enabled ? "云存储已开启" : "云存储设置"}
+                type="button"
+                onClick={openStorageDialog}
+              >
+                <Cloud className="size-4" aria-hidden="true" />
+              </button>
               <div
                 className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
                   saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
@@ -1995,6 +2238,8 @@ export function App() {
                   const totalOutputs = record.outputs.length || record.count;
                   const activeTask = Array.from(activeGenerationsRef.current.values()).find((task) => task.temporaryRecordId === record.id);
                   const isRecordRunning = record.status === "running" && Boolean(activeTask);
+                  const cloudFailedCount = cloudFailureCount(record);
+                  const cloudFailureMessage = firstCloudFailureMessage(record);
 
                   return (
                     <article
@@ -2029,6 +2274,15 @@ export function App() {
                             <dt className="sr-only">创建时间</dt>
                             <dd>{formatCreatedTime(record.createdAt)}</dd>
                           </div>
+                          {cloudFailedCount > 0 ? (
+                            <div className="inline-flex items-center gap-1 text-amber-700" title={cloudFailureMessage}>
+                              <dt className="sr-only">云端备份</dt>
+                              <dd className="inline-flex items-center gap-1">
+                                <Cloud className="size-3" aria-hidden="true" />
+                                云端失败 {cloudFailedCount}
+                              </dd>
+                            </div>
+                          ) : null}
                         </dl>
                       </div>
 
@@ -2116,6 +2370,136 @@ export function App() {
           </button>
         </div>
       </aside>
+
+      {isStorageDialogOpen ? (
+        <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="storage-dialog">
+          <div
+            aria-labelledby="storage-dialog-title"
+            aria-modal="true"
+            className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-200 px-5 py-4">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-neutral-950" id="storage-dialog-title">
+                  云存储设置
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-neutral-500">腾讯云 COS，生成图本地保存后同步上传。</p>
+              </div>
+              <button
+                aria-label="关闭云存储设置"
+                className="history-icon-action"
+                type="button"
+                onClick={closeStorageDialog}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="space-y-4 overflow-y-auto px-5 py-5">
+              {storageError ? (
+                <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-5 text-red-700" role="alert">
+                  {storageError}
+                </p>
+              ) : null}
+              {storageMessage ? (
+                <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm leading-5 text-emerald-700" role="status">
+                  {storageMessage}
+                </p>
+              ) : null}
+
+              <label className="flex items-center justify-between gap-3 rounded-md border border-neutral-200 px-3 py-3">
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-neutral-900">启用 COS 双写</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-neutral-500">关闭后新图只写本地，已有云端对象保留。</span>
+                </span>
+                <input
+                  checked={storageForm.enabled}
+                  className="size-4 accent-blue-600"
+                  data-testid="storage-enabled"
+                  type="checkbox"
+                  onChange={(event) => updateStorageForm({ enabled: event.target.checked })}
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="block sm:col-span-2">
+                  <span className="control-label">SecretId</span>
+                  <input
+                    className="field-control"
+                    data-testid="storage-secret-id"
+                    value={storageForm.secretId}
+                    onChange={(event) => updateStorageForm({ secretId: event.target.value })}
+                  />
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className="control-label">SecretKey</span>
+                  <input
+                    className="field-control"
+                    data-testid="storage-secret-key"
+                    type={storageSecretTouched ? "password" : "text"}
+                    value={storageForm.secretKey}
+                    onChange={(event) => {
+                      setStorageSecretTouched(true);
+                      updateStorageForm({ secretKey: event.target.value });
+                    }}
+                  />
+                </label>
+                <label className="block">
+                  <span className="control-label">Bucket</span>
+                  <input
+                    className="field-control"
+                    data-testid="storage-bucket"
+                    value={storageForm.bucket}
+                    onChange={(event) => updateStorageForm({ bucket: event.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="control-label">Region</span>
+                  <input
+                    className="field-control"
+                    data-testid="storage-region"
+                    value={storageForm.region}
+                    onChange={(event) => updateStorageForm({ region: event.target.value })}
+                  />
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className="control-label">Key Prefix</span>
+                  <input
+                    className="field-control"
+                    data-testid="storage-prefix"
+                    value={storageForm.keyPrefix}
+                    onChange={(event) => updateStorageForm({ keyPrefix: event.target.value })}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 border-t border-neutral-200 px-5 py-4">
+              <button
+                className="secondary-action h-10"
+                data-testid="storage-test"
+                disabled={isStorageTesting || isStorageSaving}
+                type="button"
+                onClick={() => void testStorageSettings()}
+              >
+                {isStorageTesting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Cloud className="size-4" aria-hidden="true" />}
+                测试
+              </button>
+              <button
+                className="primary-action h-10"
+                data-testid="storage-save"
+                disabled={isStorageSaving || isStorageTesting}
+                type="button"
+                onClick={() => void saveStorageSettings()}
+              >
+                {isStorageSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="size-4" aria-hidden="true" />}
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

@@ -19,6 +19,7 @@ import {
   type ImageSize,
   type OutputFormat,
   type ReferenceImageInput,
+  type SaveStorageConfigRequest,
   type StylePresetId
 } from "./contracts.js";
 import { closeDatabase } from "./database.js";
@@ -33,8 +34,9 @@ import {
 import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
 import { getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
+import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
-const MAX_PROJECT_SNAPSHOT_BYTES = 10 * 1024 * 1024;
+const MAX_PROJECT_SNAPSHOT_BYTES = 100 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 120;
 
 interface ProjectPayload {
@@ -44,7 +46,8 @@ interface ProjectPayload {
 
 export const app = new Hono();
 
-app.onError((_error, c) => {
+app.onError((error, c) => {
+  console.error(error);
   return c.json(
     {
       error: {
@@ -78,6 +81,40 @@ app.get("/api/config", (c) => {
 });
 
 app.get("/api/project", (c) => c.json(getProjectState()));
+
+app.get("/api/storage/config", (c) => c.json(getStorageConfig()));
+
+app.put("/api/storage/config", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseStorageConfigPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(await saveStorageConfig(parsed.value));
+  } catch (error) {
+    return c.json(errorResponse("storage_config_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/storage/config/test", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseStorageConfigPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  return c.json(await testStorageConfig(parsed.value));
+});
 
 app.get("/api/assets/:id/preview", async (c) => {
   const parsedWidth = parsePreviewWidth(c.req.query("width"));
@@ -135,11 +172,13 @@ app.get("/api/assets/:id", async (c) => {
 app.put("/api/project", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
+    console.warn(`Project save rejected: ${payload.error.error.code}. ${payload.error.error.message}`);
     return c.json(payload.error, 400);
   }
 
   const parsed = parseProjectPayload(payload.value);
   if (!parsed.ok) {
+    console.warn(`Project save rejected: ${parsed.error.error.code}. ${parsed.error.error.message}`);
     return c.json(parsed.error, 400);
   }
 
@@ -310,6 +349,57 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
       ...base.value,
       referenceImage,
       referenceAssetId
+    }
+  };
+}
+
+function parseStorageConfigPayload(input: unknown): ParseResult<SaveStorageConfigRequest> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_storage_config", "Storage config payload must be a JSON object.")
+    };
+  }
+
+  const enabled = input.enabled === true;
+  if (!enabled) {
+    return {
+      ok: true,
+      value: {
+        enabled: false,
+        provider: "cos"
+      }
+    };
+  }
+
+  const provider = parseOptionalString(input.provider) ?? "cos";
+  if (provider !== "cos") {
+    return {
+      ok: false,
+      error: errorResponse("invalid_storage_provider", "Only Tencent COS storage is supported.")
+    };
+  }
+
+  if (!isRecord(input.cos)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_storage_config", "COS config must be a JSON object.")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      enabled: true,
+      provider: "cos",
+      cos: {
+        secretId: stringValue(input.cos.secretId) ?? "",
+        secretKey: stringValue(input.cos.secretKey),
+        preserveSecret: input.cos.preserveSecret === true,
+        bucket: stringValue(input.cos.bucket) ?? "",
+        region: stringValue(input.cos.region) ?? "",
+        keyPrefix: stringValue(input.cos.keyPrefix) ?? ""
+      }
     }
   };
 }
@@ -487,6 +577,34 @@ function parseOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "Request failed.";
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 function parseStylePresetFromPresetId(value: unknown): string | undefined {
   const presetId = parseOptionalString(value);
   return presetId && STYLE_PRESETS.some((preset) => preset.id === presetId) ? presetId : undefined;
@@ -552,10 +670,14 @@ function parseProjectPayload(input: unknown):
   }
 
   const snapshotJson = JSON.stringify(snapshot);
-  if (!snapshotJson || Buffer.byteLength(snapshotJson, "utf8") > MAX_PROJECT_SNAPSHOT_BYTES) {
+  const snapshotBytes = snapshotJson ? Buffer.byteLength(snapshotJson, "utf8") : 0;
+  if (!snapshotJson || snapshotBytes > MAX_PROJECT_SNAPSHOT_BYTES) {
     return {
       ok: false,
-      error: errorResponse("invalid_snapshot", "Project snapshot is too large.")
+      error: errorResponse(
+        "invalid_snapshot",
+        `Project snapshot is too large (${formatBytes(snapshotBytes)}). Maximum is ${formatBytes(MAX_PROJECT_SNAPSHOT_BYTES)}.`
+      )
     };
   }
 

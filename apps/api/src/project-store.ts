@@ -14,6 +14,7 @@ import { assets, generationOutputs, generationRecords, projects } from "./schema
 
 export const DEFAULT_PROJECT_ID = "default";
 const DEFAULT_PROJECT_NAME = "Default Project";
+const fallbackWarnings = new Set<string>();
 
 interface ProjectSnapshotInput {
   name?: string;
@@ -29,9 +30,12 @@ function parseSnapshot(snapshotJson: string): unknown | null {
 }
 
 export function ensureDefaultProject(): void {
-  const existing = db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+  const existing = getDefaultProjectRow();
 
   if (existing) {
+    return;
+  }
+  if (defaultProjectRowExists()) {
     return;
   }
 
@@ -51,7 +55,7 @@ export function saveProjectSnapshot(input: ProjectSnapshotInput): ProjectState {
   ensureDefaultProject();
 
   const updatedAt = nowIso();
-  const current = db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+  const current = getDefaultProjectRow();
 
   db.update(projects)
     .set({
@@ -68,10 +72,16 @@ export function saveProjectSnapshot(input: ProjectSnapshotInput): ProjectState {
 export function getProjectState(): ProjectState {
   ensureDefaultProject();
 
-  const project = db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+  const project = getDefaultProjectRow();
 
   if (!project) {
-    throw new Error("Default project was not initialized.");
+    return {
+      id: DEFAULT_PROJECT_ID,
+      name: DEFAULT_PROJECT_NAME,
+      snapshot: null,
+      history: getGenerationHistory(),
+      updatedAt: nowIso()
+    };
   }
 
   return {
@@ -83,7 +93,59 @@ export function getProjectState(): ProjectState {
   };
 }
 
+function getDefaultProjectRow(): (typeof projects.$inferSelect) | undefined {
+  try {
+    return db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+  } catch (error) {
+    warnOnce(
+      "project-read-fallback",
+      `Project row could not be read; returning a blank canvas fallback. ${formatErrorSummary(error)}`
+    );
+    return undefined;
+  }
+}
+
+function defaultProjectRowExists(): boolean {
+  try {
+    const row = db.select({ id: projects.id }).from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+    return Boolean(row);
+  } catch {
+    return true;
+  }
+}
+
 function getGenerationHistory(): ApiGenerationRecord[] {
+  try {
+    return readGenerationHistory();
+  } catch (error) {
+    warnOnce(
+      "history-read-fallback",
+      `Generation history could not be read; returning an empty history. ${formatErrorSummary(error)}`
+    );
+    return [];
+  }
+}
+
+function warnOnce(key: string, message: string): void {
+  if (fallbackWarnings.has(key)) {
+    return;
+  }
+
+  fallbackWarnings.add(key);
+  console.warn(message);
+}
+
+function formatErrorSummary(error: unknown): string {
+  if (error instanceof Error) {
+    const codeValue = (error as { code?: unknown }).code;
+    const code = typeof codeValue === "string" ? `${codeValue}: ` : "";
+    return `${code}${error.message}`;
+  }
+
+  return String(error);
+}
+
+function readGenerationHistory(): ApiGenerationRecord[] {
   const records = db.select().from(generationRecords).orderBy(desc(generationRecords.createdAt)).limit(20).all();
   if (records.length === 0) {
     return [];
@@ -146,6 +208,15 @@ function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): Gene
     fileName: asset.fileName,
     mimeType: asset.mimeType,
     width: asset.width,
-    height: asset.height
+    height: asset.height,
+    cloud:
+      asset.cloudProvider === "cos" && (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
+        ? {
+            provider: asset.cloudProvider,
+            status: asset.cloudStatus,
+            lastError: asset.cloudError ?? undefined,
+            uploadedAt: asset.cloudUploadedAt ?? undefined
+          }
+        : undefined
   };
 }

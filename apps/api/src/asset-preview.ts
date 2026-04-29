@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
-import { getStoredAssetFile } from "./image-generation.js";
+import { readStoredAsset } from "./image-generation.js";
 import { runtimePaths } from "./runtime.js";
 
 const PREVIEW_WIDTHS = [256, 512, 1024, 2048] as const;
@@ -57,12 +57,12 @@ export function parsePreviewWidth(value: string | undefined): PreviewWidthResult
 }
 
 export async function readStoredAssetPreview(assetId: string, width: number): Promise<StoredAssetPreview | undefined> {
-  const asset = getStoredAssetFile(assetId);
+  const asset = await readStoredAsset(assetId);
   if (!asset) {
     return undefined;
   }
 
-  const previewPath = resolvePreviewPath(asset.id, width);
+  const previewPath = resolvePreviewPath(asset.file.id, width);
   const cached = await readCachedPreview(previewPath);
   if (cached) {
     return {
@@ -71,7 +71,7 @@ export async function readStoredAssetPreview(assetId: string, width: number): Pr
     };
   }
 
-  const bytes = await sharp(asset.filePath)
+  const bytes = await sharp(asset.bytes)
     .rotate()
     .resize({
       width,

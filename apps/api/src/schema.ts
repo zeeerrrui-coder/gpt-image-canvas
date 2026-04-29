@@ -16,7 +16,29 @@ export const assets = sqliteTable("assets", {
   mimeType: text("mime_type").notNull(),
   width: integer("width").notNull(),
   height: integer("height").notNull(),
+  cloudProvider: text("cloud_provider"),
+  cloudBucket: text("cloud_bucket"),
+  cloudRegion: text("cloud_region"),
+  cloudObjectKey: text("cloud_object_key"),
+  cloudStatus: text("cloud_status"),
+  cloudError: text("cloud_error"),
+  cloudUploadedAt: text("cloud_uploaded_at"),
+  cloudEtag: text("cloud_etag"),
+  cloudRequestId: text("cloud_request_id"),
   createdAt: text("created_at").notNull()
+});
+
+export const storageConfigs = sqliteTable("storage_configs", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  enabled: integer("enabled").notNull(),
+  secretId: text("secret_id"),
+  secretKey: text("secret_key"),
+  bucket: text("bucket"),
+  region: text("region"),
+  keyPrefix: text("key_prefix"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
 });
 
 export const generationRecords = sqliteTable("generation_records", {

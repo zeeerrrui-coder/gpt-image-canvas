@@ -16,9 +16,12 @@ export {
 
 export type {
   AppConfig,
+  AssetCloudUploadStatus,
+  CloudStorageProvider,
   EditImageRequest,
   GenerateImageRequest,
   GeneratedAsset,
+  GeneratedAssetCloudInfo,
   GenerationCount,
   GenerationOutput,
   GenerationRecord,
@@ -33,7 +36,10 @@ export type {
   OutputStatus,
   ProjectState,
   ReferenceImageInput,
+  SaveStorageConfigRequest,
   SizePreset,
+  StorageConfigResponse,
+  StorageTestResult,
   StylePresetId,
   ValidationResult
 } from "@gpt-image-canvas/shared";
