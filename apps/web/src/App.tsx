@@ -71,6 +71,8 @@ const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
 } satisfies Partial<TldrawOptions>;
+const TLDRAW_LICENSE_KEY =
+  "tldraw-2026-08-08/WyJ3dGU4bldjRyIsWyIqIl0sMTYsIjIwMjYtMDgtMDgiXQ.Xt7lTydUhMnKfHfp+g8Mrs9gtJjlB8uPyYMniFEfRfruCYdYEl9J0uZl0lMAf6o7GdDB1zXOVhWLFAipssI6Cw";
 
 const defaultStorageConfigForm: StorageConfigFormState = {
   enabled: false,
@@ -1878,6 +1880,7 @@ export function App() {
         {isProjectLoaded ? (
           <Tldraw
             assets={canvasAssetStore}
+            licenseKey={TLDRAW_LICENSE_KEY}
             options={tldrawOptions}
             snapshot={projectSnapshot}
             shapeUtils={shapeUtils}
