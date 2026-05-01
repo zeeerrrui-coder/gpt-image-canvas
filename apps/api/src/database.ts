@@ -79,6 +79,21 @@ CREATE TABLE IF NOT EXISTS storage_configs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS codex_oauth_tokens (
+  id TEXT PRIMARY KEY NOT NULL,
+  access_token TEXT,
+  refresh_token TEXT,
+  id_token TEXT,
+  email TEXT,
+  account_id TEXT,
+  expires_at TEXT,
+  refreshed_at TEXT,
+  unavailable_at TEXT,
+  unavailable_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS generation_records (
   id TEXT PRIMARY KEY NOT NULL,
   mode TEXT NOT NULL,
@@ -119,6 +134,15 @@ ensureColumn("assets", "cloud_error", "cloud_error TEXT");
 ensureColumn("assets", "cloud_uploaded_at", "cloud_uploaded_at TEXT");
 ensureColumn("assets", "cloud_etag", "cloud_etag TEXT");
 ensureColumn("assets", "cloud_request_id", "cloud_request_id TEXT");
+ensureColumn("codex_oauth_tokens", "access_token", "access_token TEXT");
+ensureColumn("codex_oauth_tokens", "refresh_token", "refresh_token TEXT");
+ensureColumn("codex_oauth_tokens", "id_token", "id_token TEXT");
+ensureColumn("codex_oauth_tokens", "email", "email TEXT");
+ensureColumn("codex_oauth_tokens", "account_id", "account_id TEXT");
+ensureColumn("codex_oauth_tokens", "expires_at", "expires_at TEXT");
+ensureColumn("codex_oauth_tokens", "refreshed_at", "refreshed_at TEXT");
+ensureColumn("codex_oauth_tokens", "unavailable_at", "unavailable_at TEXT");
+ensureColumn("codex_oauth_tokens", "unavailable_reason", "unavailable_reason TEXT");
 
 export const db = drizzle(sqlite, { schema });
 

@@ -6,6 +6,12 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
 import {
+  getAuthStatus,
+  logoutCodex,
+  pollCodexDeviceLogin,
+  startCodexDeviceLogin
+} from "./codex-auth.js";
+import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   OUTPUT_FORMATS,
@@ -25,12 +31,11 @@ import {
 import { closeDatabase } from "./database.js";
 import {
   ProviderError,
-  createOpenAIImageProvider,
   getConfiguredImageModel,
-  getOpenAIImageProviderConfig,
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
+import { createConfiguredImageProvider } from "./image-provider-selection.js";
 import {
   getStoredAssetFile,
   readStoredAsset,
@@ -85,6 +90,44 @@ app.get("/api/config", (c) => {
 
   return c.json(config);
 });
+
+app.get("/api/auth/status", (c) => c.json(getAuthStatus()));
+
+app.post("/api/auth/codex/device/start", async (c) => {
+  try {
+    return c.json(await startCodexDeviceLogin(c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+app.post("/api/auth/codex/device/poll", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseCodexPollPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(await pollCodexDeviceLogin(parsed.value, c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+app.post("/api/auth/codex/logout", (c) => c.json(logoutCodex()));
 
 app.get("/api/project", (c) => c.json(getProjectState()));
 
@@ -224,13 +267,8 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
-  if (!providerConfig.ok) {
-    return providerErrorJson(c, providerConfig.error);
-  }
-
   try {
-    const provider = createOpenAIImageProvider(providerConfig.config);
+    const provider = await createConfiguredImageProvider(c.req.raw.signal);
     return c.json(await runTextToImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
@@ -252,13 +290,8 @@ app.post("/api/images/edit", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
-  if (!providerConfig.ok) {
-    return providerErrorJson(c, providerConfig.error);
-  }
-
   try {
-    const provider = createOpenAIImageProvider(providerConfig.config);
+    const provider = await createConfiguredImageProvider(c.req.raw.signal);
     return c.json(await runReferenceImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
@@ -362,6 +395,33 @@ function parseGeneratePayload(input: unknown): ParseResult<ImageProviderInput> {
   return {
     ok: true,
     value: base.value
+  };
+}
+
+function parseCodexPollPayload(input: unknown): ParseResult<{ deviceAuthId: string; userCode: string }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Codex 登录轮询请求必须是 JSON 对象。")
+    };
+  }
+
+  const deviceAuthId = parseOptionalString(input.deviceAuthId);
+  const userCode = parseOptionalString(input.userCode);
+
+  if (!deviceAuthId || !userCode) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Codex 登录轮询缺少设备码。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      deviceAuthId,
+      userCode
+    }
   };
 }
 

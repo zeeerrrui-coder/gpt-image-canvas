@@ -16,9 +16,15 @@ export {
 
 export type {
   AppConfig,
+  AuthStatusResponse,
   AssetMetadataResponse,
   AssetCloudUploadStatus,
   CloudStorageProvider,
+  CodexAuthSessionView,
+  CodexDevicePollResponse,
+  CodexDevicePollStatus,
+  CodexDeviceStartResponse,
+  CodexLogoutResponse,
   EditImageRequest,
   GenerateImageRequest,
   GeneratedAsset,
@@ -39,6 +45,7 @@ export type {
   OutputStatus,
   ProjectState,
   ReferenceImageInput,
+  RuntimeImageProvider,
   SaveStorageConfigRequest,
   SizePreset,
   StorageConfigResponse,

@@ -295,6 +295,46 @@ export interface AppConfig {
   counts: readonly GenerationCount[];
 }
 
+export type RuntimeImageProvider = "openai" | "codex" | "none";
+
+export interface CodexAuthSessionView {
+  available: boolean;
+  email?: string;
+  accountId?: string;
+  expiresAt?: string;
+  refreshedAt?: string;
+  unavailableReason?: string;
+}
+
+export interface AuthStatusResponse {
+  provider: RuntimeImageProvider;
+  openaiConfigured: boolean;
+  codex: CodexAuthSessionView;
+}
+
+export interface CodexDeviceStartResponse {
+  deviceAuthId: string;
+  userCode: string;
+  verificationUrl: string;
+  interval: number;
+  expiresIn: number;
+  expiresAt: string;
+}
+
+export type CodexDevicePollStatus = "authorized" | "pending" | "expired" | "denied";
+
+export interface CodexDevicePollResponse {
+  status: CodexDevicePollStatus;
+  auth?: AuthStatusResponse;
+  interval?: number;
+  message?: string;
+}
+
+export interface CodexLogoutResponse {
+  ok: true;
+  auth: AuthStatusResponse;
+}
+
 export interface MaskedSecret {
   hasSecret: boolean;
   value?: string;

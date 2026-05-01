@@ -5,10 +5,14 @@ import {
   Cloud,
   Copy,
   Download,
+  ExternalLink,
   ImageIcon,
+  KeyRound,
   Loader2,
+  LogOut,
   MapPin,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   Square,
   X,
@@ -49,7 +53,11 @@ import {
   STYLE_PRESETS,
   resolutionTierForSize,
   validateImageSize,
+  type AuthStatusResponse,
   type AssetMetadataResponse,
+  type CodexDevicePollResponse,
+  type CodexDeviceStartResponse,
+  type CodexLogoutResponse,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -153,6 +161,7 @@ type AppRoute = "canvas" | "gallery";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelStatusTone = "progress" | "success" | "warning" | "error";
+type CodexLoginStatus = "idle" | "starting" | "pending" | "authorized" | "expired" | "denied" | "error";
 
 interface PanelStatus {
   tone: PanelStatusTone;
@@ -525,6 +534,18 @@ function formatCreatedTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function formatCodexExpiry(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "15 分钟后";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
@@ -1574,6 +1595,13 @@ export function App() {
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [isCodexLoginOpen, setIsCodexLoginOpen] = useState(false);
+  const [codexDevice, setCodexDevice] = useState<CodexDeviceStartResponse | null>(null);
+  const [codexLoginStatus, setCodexLoginStatus] = useState<CodexLoginStatus>("idle");
+  const [codexLoginMessage, setCodexLoginMessage] = useState("");
   const [storageForm, setStorageForm] = useState<StorageConfigFormState>(defaultStorageConfigForm);
   const [storageSecretTouched, setStorageSecretTouched] = useState(false);
   const [storageError, setStorageError] = useState("");
@@ -1589,6 +1617,7 @@ export function App() {
   const activeGenerationsRef = useRef<Map<number, ActiveGenerationTask>>(new Map());
   const generationRequestRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>();
+  const codexPollTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
   const isGenerating = activeGenerationCount > 0;
 
@@ -1630,6 +1659,33 @@ export function App() {
   const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
   const hasAdditionalHistory = hiddenHistoryCount > 0;
   const isExtendedCountSelected = EXTENDED_GENERATION_COUNTS.includes(count);
+  const loadAuthStatus = useCallback(async (signal?: AbortSignal): Promise<AuthStatusResponse | null> => {
+    setIsAuthLoading(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/status", { signal });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const status = (await response.json()) as AuthStatusResponse;
+      setAuthStatus(status);
+      return status;
+    } catch (error) {
+      if (signal?.aborted) {
+        return null;
+      }
+
+      setAuthError(error instanceof Error ? error.message : "无法读取图像服务登录状态。");
+      return null;
+    } finally {
+      if (!signal?.aborted) {
+        setIsAuthLoading(false);
+      }
+    }
+  }, []);
+
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
       return {
@@ -1699,6 +1755,7 @@ export function App() {
         task.controller.abort();
       }
       activeGenerationsRef.current.clear();
+      window.clearTimeout(codexPollTimerRef.current);
     };
   }, []);
 
@@ -1745,6 +1802,16 @@ export function App() {
       controller.abort();
     };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void loadAuthStatus(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [loadAuthStatus]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1813,6 +1880,127 @@ export function App() {
     setIsStorageDialogOpen(false);
     setStorageError("");
     setStorageMessage("");
+  }
+
+  async function startCodexLogin(): Promise<void> {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsCodexLoginOpen(true);
+    setCodexDevice(null);
+    setCodexLoginStatus("starting");
+    setCodexLoginMessage("");
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/codex/device/start", {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const device = (await response.json()) as CodexDeviceStartResponse;
+      setCodexDevice(device);
+      setCodexLoginStatus("pending");
+      setCodexLoginMessage("等待浏览器授权完成。");
+      scheduleCodexPoll(device, device.interval);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Codex 登录无法启动。";
+      setCodexLoginStatus("error");
+      setCodexLoginMessage(message);
+      setAuthError(message);
+    }
+  }
+
+  async function pollCodexLogin(device: CodexDeviceStartResponse): Promise<void> {
+    try {
+      const response = await fetch("/api/auth/codex/device/poll", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          deviceAuthId: device.deviceAuthId,
+          userCode: device.userCode
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const result = (await response.json()) as CodexDevicePollResponse;
+      if (result.status === "authorized") {
+        setCodexLoginStatus("authorized");
+        setCodexLoginMessage("Codex 已登录。");
+        if (result.auth) {
+          setAuthStatus(result.auth);
+        } else {
+          void loadAuthStatus();
+        }
+        return;
+      }
+
+      if (result.status === "pending") {
+        setCodexLoginStatus("pending");
+        scheduleCodexPoll(device, result.interval ?? device.interval);
+        return;
+      }
+
+      setCodexLoginStatus(result.status);
+      setCodexLoginMessage(result.message ?? "Codex 登录未完成，请重新开始。");
+      void loadAuthStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Codex 登录轮询失败。";
+      setCodexLoginStatus("error");
+      setCodexLoginMessage(message);
+      setAuthError(message);
+    }
+  }
+
+  function scheduleCodexPoll(device: CodexDeviceStartResponse, intervalSeconds: number): void {
+    window.clearTimeout(codexPollTimerRef.current);
+    const delay = Math.max(1, intervalSeconds) * 1000;
+    codexPollTimerRef.current = window.setTimeout(() => {
+      void pollCodexLogin(device);
+    }, delay);
+  }
+
+  function closeCodexLoginDialog(): void {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsCodexLoginOpen(false);
+  }
+
+  async function logoutCodexSession(): Promise<void> {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsAuthLoading(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/codex/logout", {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const result = (await response.json()) as CodexLogoutResponse;
+      setAuthStatus(result.auth);
+      setCodexDevice(null);
+      setCodexLoginStatus("idle");
+      setCodexLoginMessage("");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Codex 登出失败。");
+    } finally {
+      setIsAuthLoading(false);
+    }
+  }
+
+  async function copyCodexUserCode(): Promise<void> {
+    if (!codexDevice) {
+      return;
+    }
+
+    await writeClipboardText(codexDevice.userCode).catch(() => undefined);
   }
 
   function updateStorageForm(patch: Partial<StorageConfigFormState>): void {
@@ -2552,6 +2740,73 @@ export function App() {
             </p>
           ) : null}
 
+          <section className="auth-provider-card" data-testid="auth-provider-card">
+            <div className="auth-provider-card__main">
+              <span className="auth-provider-card__icon" data-provider={authStatus?.provider ?? "loading"}>
+                {authStatus?.provider === "openai" ? (
+                  <ShieldCheck className="size-4" aria-hidden="true" />
+                ) : isAuthLoading ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <KeyRound className="size-4" aria-hidden="true" />
+                )}
+              </span>
+              <div className="min-w-0">
+                <span className="control-label">图像服务</span>
+                <p className="auth-provider-card__title">
+                  {authStatus?.provider === "openai"
+                    ? "OpenAI API"
+                    : authStatus?.provider === "codex"
+                      ? "Codex 已登录"
+                      : isAuthLoading
+                        ? "检查登录状态"
+                        : "需要登录 Codex"}
+                </p>
+                <p className="auth-provider-card__copy">
+                  {authStatus?.provider === "openai"
+                    ? "当前使用服务器配置的 OpenAI-compatible Images API。"
+                    : authStatus?.codex.available
+                      ? authStatus.codex.email ?? authStatus.codex.accountId ?? "Codex 会话可用。"
+                      : "未配置 API Key 时，可用 Codex 账号继续生成。"}
+                </p>
+              </div>
+            </div>
+
+            {authStatus?.provider === "codex" ? (
+              <button
+                className="auth-provider-card__button"
+                type="button"
+                title="退出 Codex"
+                data-testid="codex-logout-button"
+                disabled={isAuthLoading}
+                onClick={logoutCodexSession}
+              >
+                <LogOut className="size-4" aria-hidden="true" />
+              </button>
+            ) : authStatus?.provider === "openai" ? null : (
+              <button
+                className="secondary-action auth-provider-card__login"
+                type="button"
+                data-testid="codex-login-button"
+                disabled={isAuthLoading || codexLoginStatus === "starting"}
+                onClick={startCodexLogin}
+              >
+                {codexLoginStatus === "starting" ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <KeyRound className="size-4" aria-hidden="true" />
+                )}
+                登录 Codex
+              </button>
+            )}
+
+            {authError ? (
+              <p className="auth-provider-card__error" role="alert">
+                {authError}
+              </p>
+            ) : null}
+          </section>
+
           <div data-testid="generation-mode-control">
             <span className="control-label">模式</span>
             <div className="mt-2 grid grid-cols-2 gap-2" role="group" aria-label="模式">
@@ -3151,6 +3406,80 @@ export function App() {
                 {isStorageSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="size-4" aria-hidden="true" />}
                 保存
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isCodexLoginOpen ? (
+        <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="codex-login-dialog">
+          <div
+            aria-labelledby="codex-login-title"
+            aria-modal="true"
+            className="codex-login-dialog"
+            role="dialog"
+          >
+            <div className="codex-login-dialog__header">
+              <div className="min-w-0">
+                <h2 id="codex-login-title">登录 Codex</h2>
+                <p>使用 Codex 账号授权本地生成服务。</p>
+              </div>
+              <button
+                aria-label="关闭 Codex 登录"
+                className="history-icon-action"
+                type="button"
+                onClick={closeCodexLoginDialog}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="codex-login-dialog__body">
+              {codexLoginStatus === "starting" ? (
+                <div className="codex-login-dialog__status" role="status">
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  正在创建登录码...
+                </div>
+              ) : null}
+
+              {codexDevice ? (
+                <>
+                  <div className="codex-device-code" data-testid="codex-user-code">
+                    {codexDevice.userCode}
+                  </div>
+                  <div className="codex-login-dialog__actions">
+                    <a className="primary-action h-10" href={codexDevice.verificationUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink className="size-4" aria-hidden="true" />
+                      打开登录页
+                    </a>
+                    <button className="secondary-action h-10" type="button" onClick={() => void copyCodexUserCode()}>
+                      <Copy className="size-4" aria-hidden="true" />
+                      复制代码
+                    </button>
+                  </div>
+                  <p className="codex-login-dialog__hint">
+                    代码将在 {formatCodexExpiry(codexDevice.expiresAt)} 过期。
+                  </p>
+                </>
+              ) : null}
+
+              {codexLoginMessage ? (
+                <p
+                  className={`codex-login-dialog__message codex-login-dialog__message--${codexLoginStatus}`}
+                  data-testid="codex-login-message"
+                  role={codexLoginStatus === "pending" || codexLoginStatus === "authorized" ? "status" : "alert"}
+                >
+                  {codexLoginStatus === "pending" ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                  {codexLoginMessage}
+                </p>
+              ) : null}
+
+              {codexLoginStatus === "expired" || codexLoginStatus === "denied" || codexLoginStatus === "error" ? (
+                <button className="secondary-action h-10" type="button" onClick={() => void startCodexLogin()}>
+                  <KeyRound className="size-4" aria-hidden="true" />
+                  重新开始
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

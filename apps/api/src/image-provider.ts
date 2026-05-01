@@ -39,7 +39,7 @@ export interface ImageProvider {
   edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult>;
 }
 
-export type ProviderErrorCode = "missing_api_key" | "unsupported_provider_behavior" | "upstream_failure";
+export type ProviderErrorCode = "missing_api_key" | "missing_provider" | "unsupported_provider_behavior" | "upstream_failure";
 
 export class ProviderError extends Error {
   constructor(
