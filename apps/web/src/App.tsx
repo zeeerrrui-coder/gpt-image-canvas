@@ -325,6 +325,51 @@ function isGenerationResponse(value: unknown): value is GenerationResponse {
   return typeof value === "object" && value !== null && "record" in value;
 }
 
+function failedOutputMessages(record: GenerationRecord): string[] {
+  const seen = new Set<string>();
+  const messages: string[] = [];
+
+  for (const output of record.outputs) {
+    if (output.status !== "failed") {
+      continue;
+    }
+
+    const message = output.error?.trim();
+    if (!message || seen.has(message)) {
+      continue;
+    }
+
+    seen.add(message);
+    messages.push(message);
+  }
+
+  return messages;
+}
+
+function generationFailureMessage(record: GenerationRecord): string {
+  const summary = record.error?.trim();
+  const firstFailure = failedOutputMessages(record)[0];
+
+  if (firstFailure) {
+    return summary && summary !== firstFailure ? `${summary} 失败原因：${firstFailure}` : firstFailure;
+  }
+
+  return summary || "没有可插入的成功图像。";
+}
+
+function generationWarningMessage(record: GenerationRecord, insertedCount: number, failedCount: number, cloudFailedCount: number): string {
+  const parts = [`已向画布插入 ${insertedCount} 张图像`];
+  if (failedCount > 0) {
+    parts.push(`${failedCount} 张生成失败`);
+  }
+  if (cloudFailedCount > 0) {
+    parts.push(`本地已保存，${cloudFailedCount} 张云端上传失败`);
+  }
+
+  const firstFailure = failedOutputMessages(record)[0];
+  return firstFailure ? `${parts.join("，")}。失败原因：${firstFailure}` : `${parts.join("，")}。`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1758,6 +1803,7 @@ export function App() {
 
     const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height);
     if (inputValidationMessage) {
+      setGenerationWarning(inputValidationMessage);
       return;
     }
 
@@ -1850,18 +1896,14 @@ export function App() {
         Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
       const cloudFailedCount = cloudFailureCount(body.record);
       if (insertedCount > 0) {
-        if (cloudFailedCount > 0) {
-          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像，本地已保存，${cloudFailedCount} 张云端上传失败。`);
+        if (cloudFailedCount > 0 || failedCount > 0) {
+          setGenerationWarning(generationWarningMessage(body.record, insertedCount, failedCount, cloudFailedCount));
         } else {
-          setGenerationMessage(
-            failedCount > 0
-              ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-              : `已向画布插入 ${insertedCount} 张图像。`
-          );
+          setGenerationMessage(`已向画布插入 ${insertedCount} 张图像。`);
         }
         showGenerationCompleteNotification(body.record, insertedCount, failedCount);
       } else {
-        setGenerationError(body.record.error || "没有可插入的成功图像。");
+        setGenerationError(generationFailureMessage(body.record));
       }
     } catch (error) {
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
@@ -2641,6 +2683,14 @@ export function App() {
         </div>
 
         <div className="ai-panel-actions grid grid-cols-1 gap-3 border-t border-neutral-200 bg-white px-5 py-4">
+          {panelStatus ? (
+            <div
+              className={`action-feedback panel-status-strip panel-status--${panelStatus.tone}`}
+              data-testid={`action-${panelStatus.testId}`}
+            >
+              {panelStatus.message}
+            </div>
+          ) : null}
           <button
             className="primary-action"
             disabled={!canGenerate}

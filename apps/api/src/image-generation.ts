@@ -484,12 +484,20 @@ async function mapWithConcurrency<T, TResult>(
 
 function errorToMessage(error: unknown): string {
   if (error instanceof ProviderError) {
-    return error.message;
+    return sanitizeGenerationErrorMessage(error.message);
   }
   if (error instanceof Error && error.message) {
-    return error.message;
+    return sanitizeGenerationErrorMessage(error.message);
   }
   return "图像生成失败，请重试。";
+}
+
+function sanitizeGenerationErrorMessage(message: string): string {
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "sk-[redacted]")
+    .trim()
+    .slice(0, 1200);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
