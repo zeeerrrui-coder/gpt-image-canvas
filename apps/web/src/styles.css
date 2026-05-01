@@ -2452,6 +2452,50 @@ a:focus-visible {
   border-top-color: var(--line);
 }
 
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] {
+  background: rgb(0 0 0 / 0.58);
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] > div {
+  border-color: var(--line);
+  background: var(--paper-panel);
+  box-shadow: 0 34px 90px rgb(0 0 0 / 0.45);
+  color: var(--ink);
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] > div > div:first-child,
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] > div > div:last-child {
+  border-color: var(--line);
+  background: #1a1512;
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] #storage-dialog-title,
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] .text-neutral-900,
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] .text-neutral-950 {
+  color: var(--ink);
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] .text-neutral-500 {
+  color: var(--muted-ink);
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] label:has([data-testid="storage-enabled"]) {
+  border-color: var(--line);
+  background: #161210;
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] [role="alert"] {
+  border-color: rgb(248 113 113 / 0.35);
+  background: rgb(127 29 29 / 0.22);
+  color: #fca5a5;
+}
+
+.app-root[data-canvas-theme="dark"] [data-testid="storage-dialog"] [role="status"] {
+  border-color: rgb(45 212 191 / 0.32);
+  background: rgb(20 184 166 / 0.13);
+  color: #99f6e4;
+}
+
 .app-root[data-canvas-theme="dark"] .gallery-page {
   background:
     linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px),
