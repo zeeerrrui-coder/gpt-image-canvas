@@ -13,6 +13,8 @@
   --paper: #f7f0e5;
   --paper-soft: #fbf7ef;
   --paper-panel: #fffdf8;
+  --canvas-paper: #fff7e6;
+  --canvas-paper-grid: rgb(126 50 26 / 0.18);
   --ink: #15110d;
   --muted-ink: #6f665c;
   --line: #e5d7c3;
@@ -340,6 +342,33 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
+}
+
+.canvas-resolution-badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  display: inline-flex;
+  min-width: 1.75rem;
+  height: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(255 253 248 / 0.72);
+  border-radius: 5px;
+  background: rgb(15 23 42 / 0.82);
+  box-shadow: 0 5px 14px rgb(15 23 42 / 0.16);
+  color: #fffdf8;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 0 0.32rem;
+  pointer-events: none;
+  transform-origin: top left;
+  user-select: none;
+  will-change: transform;
 }
 
 .ai-panel-backdrop,
@@ -1387,6 +1416,16 @@ a:focus-visible {
   background:
     linear-gradient(90deg, rgb(255 253 248 / 0.88), rgb(247 240 229 / 0.72)),
     var(--paper);
+}
+
+[data-testid="canvas-shell"] {
+  background: var(--canvas-paper);
+}
+
+[data-testid="canvas-shell"] .tl-theme__light,
+[data-testid="canvas-shell"] .tl-theme__dark {
+  --tl-color-background: var(--canvas-paper);
+  --tl-color-grid: var(--canvas-paper-grid);
 }
 
 .ai-panel {

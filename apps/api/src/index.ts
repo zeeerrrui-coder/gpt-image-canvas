@@ -31,7 +31,13 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
+import {
+  getStoredAssetFile,
+  readStoredAsset,
+  readStoredAssetMetadata,
+  runReferenceImageGeneration,
+  runTextToImageGeneration
+} from "./image-generation.js";
 import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
@@ -148,6 +154,15 @@ app.get("/api/assets/:id/preview", async (c) => {
       "Content-Type": "image/webp"
     }
   });
+});
+
+app.get("/api/assets/:id/metadata", async (c) => {
+  const metadata = await readStoredAssetMetadata(c.req.param("id"));
+  if (!metadata) {
+    return c.json(errorResponse("not_found", "Asset not found."), 404);
+  }
+
+  return c.json(metadata);
 });
 
 app.get("/api/assets/:id/download", async (c) => {

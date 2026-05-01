@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { eq } from "drizzle-orm";
+import sharp from "sharp";
 import type {
+  AssetMetadataResponse,
   GeneratedAsset,
   GeneratedAssetCloudInfo,
   GenerationOutput,
   GenerationRecord,
   GenerationResponse,
   GenerationStatus,
+  ImageSize,
   OutputFormat
 } from "./contracts.js";
 import { db } from "./database.js";
@@ -165,6 +168,24 @@ export async function readStoredAsset(assetId: string): Promise<{ file: StoredAs
   }
 }
 
+export async function readStoredAssetMetadata(assetId: string): Promise<AssetMetadataResponse | undefined> {
+  const asset = await readStoredAsset(assetId);
+  if (!asset) {
+    return undefined;
+  }
+
+  const size = await readImageSize(asset.bytes);
+  if (!size) {
+    return undefined;
+  }
+
+  return {
+    id: asset.file.id,
+    width: size.width,
+    height: size.height
+  };
+}
+
 async function generateSingleOutput(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
@@ -252,6 +273,11 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
   const filePath = resolve(runtimePaths.dataDir, relativePath);
   const mimeType = mimeTypes[input.outputFormat];
   const bytes = Buffer.from(image.b64Json, "base64");
+  const imageSize = await readImageSize(bytes);
+
+  if (!imageSize) {
+    throw new ProviderError("unsupported_provider_behavior", "Generated image dimensions could not be read.", 502);
+  }
 
   await localAssetStorage.putObject({ filePath, bytes });
   const cloudStorage = await saveAssetToConfiguredCloud({
@@ -267,12 +293,28 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
       url: `/api/assets/${assetId}`,
       fileName,
       mimeType,
-      width: input.size.width,
-      height: input.size.height,
+      width: imageSize.width,
+      height: imageSize.height,
       cloud: toGeneratedAssetCloud(cloudStorage)
     },
     cloudStorage
   };
+}
+
+async function readImageSize(bytes: Buffer): Promise<ImageSize | undefined> {
+  try {
+    const metadata = await sharp(bytes).metadata();
+    if (!metadata.width || !metadata.height) {
+      return undefined;
+    }
+
+    return {
+      width: metadata.width,
+      height: metadata.height
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {

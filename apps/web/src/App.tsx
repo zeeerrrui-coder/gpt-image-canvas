@@ -29,7 +29,9 @@ import {
   type TLStoreSnapshot,
   type TLComponents,
   type TldrawOptions,
-  useIsDarkMode
+  useIsDarkMode,
+  useEditor,
+  useValue
 } from "tldraw";
 import {
   GENERATION_PLACEHOLDER_TYPE,
@@ -45,7 +47,9 @@ import {
   OUTPUT_FORMATS,
   SIZE_PRESETS,
   STYLE_PRESETS,
+  resolutionTierForSize,
   validateImageSize,
+  type AssetMetadataResponse,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -57,6 +61,7 @@ import {
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
+  type ResolutionTier,
   type SaveStorageConfigRequest,
   type SizePreset,
   type StorageConfigResponse,
@@ -73,6 +78,12 @@ type AssetPreviewWidth = (typeof ASSET_PREVIEW_WIDTHS)[number];
 const GENERATED_ASSET_INITIAL_PREVIEW_WIDTH: AssetPreviewWidth = 2048;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const initialCanvasPreviewWidths = new Map<string, AssetPreviewWidth>();
+const assetMetadataCache = new Map<string, ImageSize>();
+const assetMetadataRequests = new Map<string, Promise<ImageSize | undefined>>();
+const RESOLUTION_BADGE_BASE_OFFSET = 7;
+const RESOLUTION_BADGE_MIN_SCALE = 0.52;
+const RESOLUTION_BADGE_SMALL_IMAGE_SIDE = 32;
+const RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE = 220;
 const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
@@ -623,6 +634,10 @@ function livePlacement(editor: Editor, placement: GenerationPlaceholderPlacement
 
 function createImageAsset(asset: GeneratedAsset): TLAsset {
   initialCanvasPreviewWidths.set(asset.id, GENERATED_ASSET_INITIAL_PREVIEW_WIDTH);
+  rememberAssetMetadata(asset.id, {
+    width: asset.width,
+    height: asset.height
+  });
 
   return {
     id: createTldrawAssetId(asset.id),
@@ -981,6 +996,250 @@ function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>,
   const dpr = Number.isFinite(context.dpr) && context.dpr > 0 ? context.dpr : window.devicePixelRatio || 1;
   const requestedWidth = Math.max(1, Math.ceil(asset.props.w * context.screenScale * dpr));
   return ASSET_PREVIEW_WIDTHS.find((widthValue) => widthValue >= requestedWidth) ?? ASSET_PREVIEW_WIDTHS[ASSET_PREVIEW_WIDTHS.length - 1];
+}
+
+interface CanvasResolutionBadgeTarget {
+  localAssetId?: string;
+  fallbackSize: ImageSize;
+  badgeScale: number;
+  screenX: number;
+  screenY: number;
+}
+
+interface ClientPoint {
+  x: number;
+  y: number;
+}
+
+function CanvasResolutionBadgeOverlay() {
+  const editor = useEditor();
+  const pointerClientPoint = usePointerClientPoint(editor);
+  const target = useValue("canvas resolution badge target", () => getCanvasResolutionBadgeTarget(editor, pointerClientPoint), [
+    editor,
+    pointerClientPoint?.x,
+    pointerClientPoint?.y
+  ]);
+  const [loadedMetadata, setLoadedMetadata] = useState<{ assetId: string; size: ImageSize } | undefined>();
+
+  const localAssetId = target?.localAssetId;
+  const cachedMetadata = localAssetId ? assetMetadataCache.get(localAssetId) : undefined;
+  const loadedSize = loadedMetadata && loadedMetadata.assetId === localAssetId ? loadedMetadata.size : undefined;
+  const resolvedSize = localAssetId ? (cachedMetadata ?? loadedSize) : target?.fallbackSize;
+
+  useEffect(() => {
+    if (!localAssetId || assetMetadataCache.has(localAssetId)) {
+      return;
+    }
+
+    let isActive = true;
+    void fetchAssetMetadata(localAssetId).then((size) => {
+      if (isActive && size) {
+        setLoadedMetadata({ assetId: localAssetId, size });
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [localAssetId]);
+
+  if (!target || !resolvedSize) {
+    return null;
+  }
+
+  const tier: ResolutionTier = resolutionTierForSize(resolvedSize);
+
+  return (
+    <span
+      aria-hidden="true"
+      className="canvas-resolution-badge"
+      data-resolution-tier={tier}
+      data-testid="canvas-resolution-badge"
+      style={{
+        transform: `translate3d(${Math.round(target.screenX + resolutionBadgeOffset(target.badgeScale))}px, ${Math.round(
+          target.screenY + resolutionBadgeOffset(target.badgeScale)
+        )}px, 0) scale(${target.badgeScale})`
+      }}
+    >
+      {tier}
+    </span>
+  );
+}
+
+function usePointerClientPoint(editor: Editor): ClientPoint | undefined {
+  const [point, setPoint] = useState<ClientPoint | undefined>();
+  const frameRef = useRef<number | undefined>();
+  const latestPointRef = useRef<ClientPoint | undefined>();
+
+  useEffect(() => {
+    const ownerWindow = editor.getContainer().ownerDocument.defaultView ?? window;
+
+    const updatePoint = (nextPoint: ClientPoint | undefined) => {
+      latestPointRef.current = nextPoint;
+      if (frameRef.current !== undefined) {
+        return;
+      }
+
+      frameRef.current = ownerWindow.requestAnimationFrame(() => {
+        frameRef.current = undefined;
+        setPoint(latestPointRef.current);
+      });
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      updatePoint({
+        x: event.clientX,
+        y: event.clientY
+      });
+    };
+    const handlePointerLeave = () => updatePoint(undefined);
+
+    ownerWindow.addEventListener("pointermove", handlePointerMove, { passive: true });
+    ownerWindow.addEventListener("pointerleave", handlePointerLeave);
+    ownerWindow.addEventListener("blur", handlePointerLeave);
+
+    return () => {
+      ownerWindow.removeEventListener("pointermove", handlePointerMove);
+      ownerWindow.removeEventListener("pointerleave", handlePointerLeave);
+      ownerWindow.removeEventListener("blur", handlePointerLeave);
+      if (frameRef.current !== undefined) {
+        ownerWindow.cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, [editor]);
+
+  return point;
+}
+
+function getCanvasResolutionBadgeTarget(editor: Editor, pointerClientPoint: ClientPoint | undefined): CanvasResolutionBadgeTarget | undefined {
+  const imageShape = getImageShapeUnderPointer(editor, pointerClientPoint);
+  if (!imageShape) {
+    return undefined;
+  }
+
+  const bounds = editor.getShapePageBounds(imageShape);
+  if (!bounds) {
+    return undefined;
+  }
+
+  const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
+  const sourceUrl = getImageSourceUrl(imageShape, asset);
+  const localAssetId = getLocalAssetId(asset, sourceUrl);
+  const topLeft = editor.pageToScreen({ x: bounds.x, y: bounds.y });
+  const bottomRight = editor.pageToScreen({ x: bounds.x + bounds.w, y: bounds.y + bounds.h });
+  const containerRect = editor.getContainer().getBoundingClientRect();
+  const screenWidth = Math.abs(bottomRight.x - topLeft.x);
+  const screenHeight = Math.abs(bottomRight.y - topLeft.y);
+
+  return {
+    localAssetId,
+    fallbackSize: fallbackImageSize(imageShape, asset),
+    badgeScale: resolutionBadgeScale(screenWidth, screenHeight, containerRect.width),
+    screenX: topLeft.x - containerRect.left,
+    screenY: topLeft.y - containerRect.top
+  };
+}
+
+function resolutionBadgeScale(screenWidth: number, screenHeight: number, canvasWidth: number): number {
+  const imageShortSide = Math.max(0, Math.min(screenWidth, screenHeight));
+  const imageScale =
+    imageShortSide >= RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE
+      ? 1
+      : RESOLUTION_BADGE_MIN_SCALE +
+        ((Math.max(imageShortSide, RESOLUTION_BADGE_SMALL_IMAGE_SIDE) - RESOLUTION_BADGE_SMALL_IMAGE_SIDE) /
+          (RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE - RESOLUTION_BADGE_SMALL_IMAGE_SIDE)) *
+          (1 - RESOLUTION_BADGE_MIN_SCALE);
+  const canvasScale = canvasWidth < 520 ? 0.78 : canvasWidth < 760 ? 0.88 : 1;
+
+  return Math.max(RESOLUTION_BADGE_MIN_SCALE, Math.min(1, imageScale, canvasScale));
+}
+
+function resolutionBadgeOffset(scale: number): number {
+  return Math.max(4, RESOLUTION_BADGE_BASE_OFFSET * scale);
+}
+
+function getImageShapeUnderPointer(editor: Editor, pointerClientPoint: ClientPoint | undefined): TLImageShape | undefined {
+  if (!pointerClientPoint || !isPointerOverCanvas(editor, pointerClientPoint)) {
+    return undefined;
+  }
+
+  const shapeAtPoint = editor.getShapeAtPoint(editor.screenToPage(pointerClientPoint), {
+    hitInside: true,
+    renderingOnly: true,
+    filter: (shape) => shape.type === "image"
+  });
+
+  return shapeAtPoint?.type === "image" ? (shapeAtPoint as TLImageShape) : undefined;
+}
+
+function isPointerOverCanvas(editor: Editor, pointerClientPoint: ClientPoint): boolean {
+  const target = editor.getContainer().ownerDocument.elementFromPoint(pointerClientPoint.x, pointerClientPoint.y);
+  return Boolean(target?.closest(".tl-canvas"));
+}
+
+function fallbackImageSize(imageShape: TLImageShape, asset: TLAsset | undefined): ImageSize {
+  if (asset?.type === "image" && isUsableImageSize(asset.props)) {
+    return {
+      width: asset.props.w,
+      height: asset.props.h
+    };
+  }
+
+  return {
+    width: imageShape.props.w,
+    height: imageShape.props.h
+  };
+}
+
+function isUsableImageSize(size: { width?: unknown; height?: unknown; w?: unknown; h?: unknown }): boolean {
+  const width = typeof size.width === "number" ? size.width : size.w;
+  const height = typeof size.height === "number" ? size.height : size.h;
+  return typeof width === "number" && typeof height === "number" && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+}
+
+function rememberAssetMetadata(assetId: string, size: ImageSize): void {
+  if (isUsableImageSize(size)) {
+    assetMetadataCache.set(assetId, size);
+  }
+}
+
+async function fetchAssetMetadata(assetId: string): Promise<ImageSize | undefined> {
+  const cached = assetMetadataCache.get(assetId);
+  if (cached) {
+    return cached;
+  }
+
+  const existingRequest = assetMetadataRequests.get(assetId);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}/metadata`)
+    .then(async (response) => {
+      if (!response.ok) {
+        return undefined;
+      }
+
+      const body = (await response.json()) as AssetMetadataResponse;
+      const size = {
+        width: body.width,
+        height: body.height
+      };
+
+      if (body.id !== assetId || !isUsableImageSize(size)) {
+        return undefined;
+      }
+
+      rememberAssetMetadata(assetId, size);
+      return size;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      assetMetadataRequests.delete(assetId);
+    });
+
+  assetMetadataRequests.set(assetId, request);
+  return request;
 }
 
 function findCanvasImageShape(editor: Editor, record: GenerationRecord): TLShapeId | undefined {
@@ -1345,7 +1604,12 @@ export function App() {
   const tldrawComponents = useMemo(
     () =>
       ({
-        InFrontOfTheCanvas: () => <CanvasThemeSync onChange={setIsCanvasDarkMode} />,
+        InFrontOfTheCanvas: () => (
+          <>
+            <CanvasThemeSync onChange={setIsCanvasDarkMode} />
+            <CanvasResolutionBadgeOverlay />
+          </>
+        ),
         StylePanel: null
       }) satisfies TLComponents,
     []

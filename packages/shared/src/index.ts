@@ -74,6 +74,23 @@ export interface ImageSize {
   height: number;
 }
 
+export type ResolutionTier = "1K" | "2K" | "4K";
+
+export interface AssetMetadataResponse extends ImageSize {
+  id: string;
+}
+
+export function resolutionTierForSize(size: ImageSize): ResolutionTier {
+  const longestSide = Math.max(size.width, size.height);
+  if (longestSide >= 3840) {
+    return "4K";
+  }
+  if (longestSide >= 2048) {
+    return "2K";
+  }
+  return "1K";
+}
+
 export const CUSTOM_SIZE_PRESET_ID = "custom" as const;
 export type ImageSizePresetId = (typeof SIZE_PRESETS)[number]["id"] | typeof CUSTOM_SIZE_PRESET_ID;
 

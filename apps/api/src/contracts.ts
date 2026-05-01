@@ -16,6 +16,7 @@ export {
 
 export type {
   AppConfig,
+  AssetMetadataResponse,
   AssetCloudUploadStatus,
   CloudStorageProvider,
   EditImageRequest,
