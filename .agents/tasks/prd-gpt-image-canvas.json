@@ -548,6 +548,79 @@
       "startedAt": "2026-04-28T05:35:00.881719+00:00",
       "completedAt": "2026-04-28T05:55:29.719212+00:00",
       "updatedAt": "2026-04-28T05:55:29.719212+00:00"
+    },
+    {
+      "id": "US-017",
+      "title": "Add Codex auth and image provider fallback",
+      "status": "done",
+      "dependsOn": [
+        "US-016"
+      ],
+      "description": "As a creator without an OpenAI API key, I want to authenticate with Codex from the web app so image generation can still work through my Codex account.",
+      "acceptanceCriteria": [
+        "Add backend auth status, Codex device-login start/poll, and Codex logout endpoints without returning token secrets to the browser.",
+        "Persist Codex OAuth token data in SQLite under DATA_DIR, including access token, refresh token, ID token, email, account ID, expiry, and refresh timestamp.",
+        "Refresh expired or near-expired Codex access tokens before generation; clear or mark the session unavailable when refresh fails with a non-retryable auth error.",
+        "Keep provider precedence stable: OPENAI_API_KEY and OPENAI_BASE_URL continue to use the existing OpenAI-compatible Images API; Codex is used only when no API key is configured and a valid Codex session exists.",
+        "Implement a Codex Responses image_generation provider for text generation and reference-image generation, mapping prompt, size, quality, output format, and reference images into the Responses request.",
+        "Parse Codex image_generation outputs from response.completed and response.output_item.done events and return base64 images through the existing ImageProvider contract.",
+        "Reuse the existing local asset persistence, COS backup, generation history, and provider error sanitization flows.",
+        "Negative case: when neither API key nor Codex session is available, generation returns a clear missing-provider JSON error without logging secrets.",
+        "Verification: provider selection, Codex token parsing/refresh, device flow response parsing, and Codex image result extraction are covered by focused tests or deterministic smoke checks.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-05-01T13:30:58.806821+00:00",
+      "completedAt": "2026-05-01T14:21:50.009820+00:00",
+      "updatedAt": "2026-05-01T14:21:50.009820+00:00"
+    },
+    {
+      "id": "US-018",
+      "title": "Build premium homepage and credential-aware routing",
+      "status": "done",
+      "dependsOn": [
+        "US-017"
+      ],
+      "description": "As a first-time visitor without credentials, I want a refined project homepage with clear Codex login and API setup paths before entering the canvas.",
+      "acceptanceCriteria": [
+        "Add app routes for home (/), canvas (/canvas), and gallery (/gallery).",
+        "When neither OPENAI_API_KEY nor a valid Codex session is available, / displays a premium Chinese homepage for \\u4e13\\u4e1a AI \\u753b\\u5e03 and /canvas redirects or navigates back to /.",
+        "When a generation provider is available, / should route users into /canvas while /gallery remains available in all credential states.",
+        "Top navigation reflects the new routes and keeps Gallery accessible without credentials.",
+        "Homepage uses the existing product preview asset and an editorial luxury visual direction consistent with the current warm paper, serif typography, terracotta, and teal design language.",
+        "Homepage includes two primary actions: Codex \\u767b\\u5f55 opens the Codex device-login dialog, and \\u63a5\\u5165 API opens an instructional modal for .env-based API configuration.",
+        "The Codex login dialog shows verification URL, user code, pending/success/expired/error states, supports retry/close, and automatically navigates to /canvas after successful login.",
+        "The API setup modal is documentation-only and never stores or echoes API keys in the web app.",
+        "Mobile and desktop layouts must keep text legible, controls within bounds, and no overlapping UI.",
+        "Browser verification: no-credential home, /canvas guard, /gallery access, API modal, Codex login dialog pending flow, and credential-available /canvas routing are checked.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-05-01T14:21:52.000000+00:00",
+      "completedAt": "2026-05-01T14:48:31.571782+00:00",
+      "updatedAt": "2026-05-01T14:48:31.571782+00:00"
+    },
+    {
+      "id": "US-019",
+      "title": "Document auth options and complete Ralph verification handoff",
+      "status": "done",
+      "dependsOn": [
+        "US-018"
+      ],
+      "description": "As a maintainer, I want the new authentication options, homepage routing, and verification results documented so the Ralph handoff is safe to continue.",
+      "acceptanceCriteria": [
+        "Update README.md and README.zh-CN.md with the new / homepage, /canvas workspace route, Codex login path, API key precedence, and Gallery availability.",
+        "Update .env.example comments to explain that OPENAI_API_KEY remains optional when using Codex login, while API keys still take precedence when configured.",
+        "Document that Codex OAuth tokens are stored in DATA_DIR SQLite and must be treated as sensitive local runtime data.",
+        "Document that the API setup modal is instructional only and does not save API keys from the browser.",
+        "Run pnpm typecheck successfully.",
+        "Run pnpm build successfully.",
+        "Run pnpm dev and browser-verify desktop and mobile states for no-credential homepage, canvas guard, Gallery access, API setup modal, and available-provider canvas routing where possible.",
+        "If real Codex authorization or image capability is unavailable, record the exact environmental blocker without reading, printing, or committing secrets.",
+        "Confirm git status excludes .env, .ralph, .codex-temp, data, generated images, SQLite databases, and build output from commits.",
+        "Append Ralph progress or handoff notes only in local Ralph runtime files; do not commit .ralph artifacts."
+      ],
+      "startedAt": "2026-05-01T14:31:25.324735+00:00",
+      "completedAt": "2026-05-01T14:48:31.571782+00:00",
+      "updatedAt": "2026-05-01T14:48:31.571782+00:00"
     }
   ]
 }
