@@ -12,6 +12,7 @@ import {
   LogOut,
   MapPin,
   RotateCcw,
+  Settings,
   ShieldCheck,
   Sparkles,
   Square,
@@ -43,7 +44,8 @@ import {
   GenerationPlaceholderShapeUtil,
   type GenerationPlaceholderShape
 } from "./GenerationPlaceholderShape";
-import { ApiSetupDialog, HomePage } from "./HomePage";
+import { HomePage } from "./HomePage";
+import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import {
   CUSTOM_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -1499,10 +1501,12 @@ function BrandName() {
 }
 
 function TopNavigation({
+  onOpenProviderConfig,
   route,
   onNavigate,
   onPreloadGallery
 }: {
+  onOpenProviderConfig: () => void;
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
@@ -1517,52 +1521,65 @@ function TopNavigation({
             <p className="brand-tagline">本地 AI 图像画布</p>
           </div>
         </div>
-        <nav aria-label="主要页面" className="top-navigation__links">
-          <a
-            aria-current={route === "home" ? "page" : undefined}
-            className="top-navigation__link"
-            data-active={route === "home"}
-            data-testid="nav-home"
-            href="/"
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigate("home");
-            }}
+        <div className="top-navigation__actions">
+          <nav aria-label="主要页面" className="top-navigation__links">
+            <a
+              aria-current={route === "home" ? "page" : undefined}
+              className="top-navigation__link"
+              data-active={route === "home"}
+              data-testid="nav-home"
+              href="/"
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate("home");
+              }}
+            >
+              <Sparkles className="size-4" aria-hidden="true" />
+              首页
+            </a>
+            <a
+              aria-current={route === "canvas" ? "page" : undefined}
+              className="top-navigation__link"
+              data-active={route === "canvas"}
+              data-testid="nav-canvas"
+              href="/canvas"
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate("canvas");
+              }}
+            >
+              <Square className="size-4" aria-hidden="true" />
+              画布
+            </a>
+            <a
+              aria-current={route === "gallery" ? "page" : undefined}
+              className="top-navigation__link"
+              data-active={route === "gallery"}
+              data-testid="nav-gallery"
+              href="/gallery"
+              onFocus={onPreloadGallery}
+              onMouseEnter={onPreloadGallery}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate("gallery");
+              }}
+            >
+              <ImageIcon className="size-4" aria-hidden="true" />
+              Gallery
+            </a>
+          </nav>
+          <button
+            aria-label="打开生成服务配置"
+            className="top-navigation__settings"
+            data-testid="global-provider-settings"
+            title="生成服务配置"
+            type="button"
+            onClick={onOpenProviderConfig}
           >
-            <Sparkles className="size-4" aria-hidden="true" />
-            首页
-          </a>
-          <a
-            aria-current={route === "canvas" ? "page" : undefined}
-            className="top-navigation__link"
-            data-active={route === "canvas"}
-            data-testid="nav-canvas"
-            href="/canvas"
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigate("canvas");
-            }}
-          >
-            <Square className="size-4" aria-hidden="true" />
-            画布
-          </a>
-          <a
-            aria-current={route === "gallery" ? "page" : undefined}
-            className="top-navigation__link"
-            data-active={route === "gallery"}
-            data-testid="nav-gallery"
-            href="/gallery"
-            onFocus={onPreloadGallery}
-            onMouseEnter={onPreloadGallery}
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigate("gallery");
-            }}
-          >
-            <ImageIcon className="size-4" aria-hidden="true" />
-            Gallery
-          </a>
-        </nav>
+            <Settings className="size-4" aria-hidden="true" />
+            <span>配置</span>
+          </button>
+        </div>
       </div>
     </header>
   );
@@ -1600,8 +1617,24 @@ function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoad
   title: string;
 } {
   if (authStatus?.provider === "openai") {
+    if (authStatus.activeSource?.id === "local-openai") {
+      return {
+        copy: "当前使用应用内保存的 OpenAI 兼容配置。",
+        provider: "openai",
+        title: "本地 OpenAI"
+      };
+    }
+
+    if (authStatus.activeSource?.id === "env-openai") {
+      return {
+        copy: "当前使用 .env 或运行时环境变量中的 OpenAI 兼容配置。",
+        provider: "openai",
+        title: "环境 OpenAI"
+      };
+    }
+
     return {
-      copy: "当前使用服务器配置的 OpenAI-compatible Images API。",
+      copy: "当前使用 OpenAI 兼容 Images API。",
       provider: "openai",
       title: "OpenAI API"
     };
@@ -1624,9 +1657,9 @@ function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoad
   }
 
   return {
-    copy: "未配置 API Key 时，可用 Codex 账号继续生成。",
+    copy: "打开右上角配置，可保存本地 API 或登录 Codex。",
     provider: "none",
-    title: "需要登录 Codex"
+    title: "需要生成服务"
   };
 }
 
@@ -1733,7 +1766,7 @@ export function App() {
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
-  const [isApiSetupDialogOpen, setIsApiSetupDialogOpen] = useState(false);
+  const [isProviderConfigDialogOpen, setIsProviderConfigDialogOpen] = useState(false);
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -2026,24 +2059,6 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!isApiSetupDialogOpen) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsApiSetupDialogOpen(false);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isApiSetupDialogOpen]);
-
   const closeAiPanel = useCallback((): void => {
     setIsAiPanelOpen(false);
     window.requestAnimationFrame(() => {
@@ -2065,8 +2080,8 @@ export function App() {
     setStorageMessage("");
   }
 
-  function closeApiSetupDialog(): void {
-    setIsApiSetupDialogOpen(false);
+  function closeProviderConfigDialog(): void {
+    setIsProviderConfigDialogOpen(false);
   }
 
   async function startCodexLogin(): Promise<void> {
@@ -2809,14 +2824,19 @@ export function App() {
 
   return (
     <div className="app-root" data-canvas-theme={route !== "home" && isCanvasDarkMode ? "dark" : "light"}>
-      <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
+      <TopNavigation
+        route={route}
+        onNavigate={navigateToRoute}
+        onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
+        onPreloadGallery={preloadGalleryPage}
+      />
       {route === "home" ? (
         <HomePage
           authError={authError}
           authStatus={authStatus}
           isAuthLoading={isAuthLoading}
           isCodexStarting={codexLoginStatus === "starting"}
-          onOpenApiSetup={() => setIsApiSetupDialogOpen(true)}
+          onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
           onOpenGallery={() => navigateToRoute("gallery")}
           onStartCodexLogin={startCodexLogin}
         />
@@ -3631,7 +3651,16 @@ export function App() {
         document.body
       ) : null}
       </main>
-      {isApiSetupDialogOpen ? <ApiSetupDialog onClose={closeApiSetupDialog} /> : null}
+      {isProviderConfigDialogOpen ? (
+        <ProviderConfigDialog
+          isAuthLoading={isAuthLoading}
+          isCodexStarting={codexLoginStatus === "starting"}
+          onClose={closeProviderConfigDialog}
+          onLogoutCodex={logoutCodexSession}
+          onRefreshAuthStatus={loadAuthStatus}
+          onStartCodexLogin={startCodexLogin}
+        />
+      ) : null}
       {route === "gallery" ? (
         <Suspense
           fallback={

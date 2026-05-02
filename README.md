@@ -15,7 +15,7 @@ Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. V
 - Optional Tencent Cloud COS backup for newly generated images.
 - Generation history with locate, rerun, download, and cloud upload status.
 - OpenAI-compatible image endpoint support, including PackyCode / `gpt-image` style responses.
-- Credential-aware routes with a premium homepage, API-key priority, and optional Codex login when no API key is configured.
+- Credential-aware routes with a global provider configuration dialog, API-key priority, local API storage, and optional Codex login fallback.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-For API-key based live generation, set `OPENAI_API_KEY` in `.env`. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
+For API-key based live generation, set `OPENAI_API_KEY` in `.env` or open the top-right `配置` dialog in the app and save one local OpenAI-compatible API configuration. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env` or enter a local Base URL in the dialog; to use a different compatible image model, set `OPENAI_IMAGE_MODEL` or the dialog's advanced model field.
 
 Open the web app at `http://localhost:5173`.
 
@@ -51,9 +51,17 @@ Open the web app at `http://localhost:5173`.
 - `/` is the credential-aware homepage. If neither `OPENAI_API_KEY` nor a valid Codex session is available, it presents the project overview with two actions: `Codex 登录` and `接入 API`.
 - `/canvas` is the working canvas. When no generation provider is available, the app routes users back to `/`; when a provider is available, `/` routes into `/canvas`.
 - `/gallery` remains accessible in all credential states so locally saved work can still be viewed.
-- Provider priority is fixed: a non-empty `OPENAI_API_KEY` always uses the OpenAI-compatible Images API first. Codex is used only when no API key is configured and a valid Codex session exists.
-- The `接入 API` modal is instructional only. It explains `.env` setup and never stores, submits, or echoes an API key in the browser.
+- The top-right `配置` button is available from Home, Canvas, and Gallery. It shows provider priority and source details for environment OpenAI, local OpenAI-compatible API, and Codex.
+- Provider priority defaults to environment OpenAI, local OpenAI, then Codex, and can be reordered in the dialog. Fallback only happens before a request is created when a higher-priority source is empty or unavailable.
+- Environment values remain read-only. The dialog masks `OPENAI_API_KEY`, shows Base URL, model, timeout, and reminds you to restart the API after `.env` changes.
+- The `接入 API` action on Home opens the same provider configuration dialog, where a local API key can be saved or replaced.
 - The `Codex 登录` modal starts Codex device login, displays the verification URL and user code, and stores resulting OAuth token material only on the local API side.
+
+## Provider Configuration
+
+The provider configuration dialog saves only one local OpenAI-compatible API profile. Local API keys are stored in the SQLite database under `DATA_DIR`, returned only as masked values, and preserved unless you enter a replacement key. This is meant for a local workstation workflow, not a public web deployment.
+
+Environment variables are still the most explicit operator-controlled source. They are visible as a read-only provider source in the dialog, are not edited by the app, and remain first in the default order. You can reorder sources in the UI, but do not expose the app publicly while `.env`, local provider keys, Codex tokens, or COS secrets are configured.
 
 ## Upgrading To v0.1.0
 
@@ -85,7 +93,7 @@ pnpm typecheck
 pnpm build
 ```
 
-Keep credentials out of prompts and logs. Put your OpenAI API key only in a local `.env` file copied from `.env.example`, and do not paste the key into a Codex message. If Codex needs to verify live generation, ask it to use the existing `.env` without printing environment values.
+Keep credentials out of prompts and logs. Put your OpenAI API key only in a local `.env` file copied from `.env.example` or the app's provider configuration dialog, and do not paste the key into a Codex message. If Codex needs to verify live generation, ask it to use existing local credentials without printing environment or SQLite values.
 
 For UI changes, have Codex run `pnpm dev` and verify the Vite app in a browser at `http://localhost:5173`. Local scratch files should stay under `.codex-temp/`, which is ignored by Git.
 
@@ -155,7 +163,7 @@ macOS/Linux:
 NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
-`OPENAI_API_KEY` may be left empty for local boot checks or Codex-login based generation. The app still starts; without an API key or valid Codex session, generation endpoints return a `missing_provider` JSON error and the browser opens on the homepage.
+`OPENAI_API_KEY` may be left empty for local boot checks, in-app local provider configuration, or Codex-login based generation. The app still starts; without any available provider, generation endpoints return a `missing_provider` JSON error and the browser opens on the homepage.
 
 ## Tencent Cloud COS Backup
 
@@ -179,14 +187,15 @@ Cloud upload failures do not fail image generation. The asset remains available 
 
 Runtime state is stored under `DATA_DIR`, which defaults to `./data` locally and `/app/data` in Docker. The directory contains:
 
-- `gpt-image-canvas.sqlite` for the default project, generation history, asset metadata, cloud upload metadata, optional COS settings, and Codex OAuth token records.
+- `gpt-image-canvas.sqlite` for the default project, generation history, asset metadata, cloud upload metadata, one optional local provider configuration, optional COS settings, and Codex OAuth token records.
 - `assets/` for generated image files.
 
 The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so projects and generated assets survive container rebuilds. Do not commit `.env`, `data/`, generated images, SQLite files, or build output.
 
 ## Security / Privacy Notes
 
-- Secrets are read only from `.env` or runtime environment variables. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, or logs that include secret values.
+- Secrets are read only from `.env`, runtime environment variables, or the local SQLite settings database. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, SQLite databases, or logs that include secret values.
+- Local provider API keys saved from the top-right provider dialog are stored in SQLite and masked by the provider-config API. Treat `data/gpt-image-canvas.sqlite` as sensitive after saving a local API key, and do not publish the local app without adding your own authentication and network controls.
 - Codex OAuth access tokens, refresh tokens, ID tokens, email, account ID, expiry, and refresh timestamps are stored in local SQLite under `DATA_DIR`. Treat the SQLite database as sensitive runtime data after Codex login.
 - COS SecretKey values saved from the UI are stored locally in SQLite and are masked by the settings API. Treat `data/gpt-image-canvas.sqlite` as sensitive when COS is configured.
 - Prompts, project state, generated assets, and SQLite data are local runtime data under `DATA_DIR`. Treat `data/` as private unless you intentionally export specific assets.
@@ -195,11 +204,11 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 
 ## Troubleshooting
 
-- Missing or empty `OPENAI_API_KEY`: the app still boots. If no Codex session is available, `/` shows the homepage and text-to-image / reference-image requests return `missing_provider`. Add a valid key to `.env` and restart the API or Docker container, or use the `Codex 登录` flow from the homepage.
+- Missing or empty `OPENAI_API_KEY`: the app still boots. If no local API config or Codex session is available, `/` shows the homepage and text-to-image / reference-image requests return `missing_provider`. Add a valid key to `.env` and restart the API or Docker container, save a local API key from `配置`, or use the `Codex 登录` flow.
 - Codex login cannot complete: confirm the machine can reach `https://auth.openai.com`, keep the device-login dialog open until authorization finishes, and restart the flow if the user code expires. Do not paste or log token values.
-- Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container. The endpoint must be OpenAI-compatible and support the configured image model.
-- Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access the configured image model. Set `OPENAI_IMAGE_MODEL` if your compatible endpoint expects a different model name.
-- High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` in `.env` if needed.
+- Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container, or enter a local Base URL in `配置`. The endpoint must be OpenAI-compatible and support the configured image model.
+- Missing model access: confirm the OpenAI organization and project used by the active provider key can access the configured image model. Set `OPENAI_IMAGE_MODEL` or the local advanced model field if your compatible endpoint expects a different model name.
+- High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` or the local provider timeout field if needed.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime. If Web port `5173` is occupied, stop the process using it, or run `pnpm web:dev -- --port 5174` explicitly and open the printed URL.
 - Docker build cannot pull the Node base image: use a locally cached image with `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` on macOS/Linux or `$env:NODE_IMAGE = 'node:23-bullseye-slim'` followed by `docker compose up --build` in Windows PowerShell, or restore Docker Hub access and rerun `docker compose up --build`.
 - Docker config output includes `.env` values by default. Use `docker compose config --quiet --no-env-resolution` for validation when real credentials are present, and do not share expanded config output.
