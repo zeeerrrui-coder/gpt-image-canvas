@@ -141,7 +141,7 @@
     {
       "id": "PC-002",
       "title": "Build global provider configuration dialog",
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "PC-001"
       ],
@@ -163,8 +163,8 @@
         "Verification: pnpm typecheck and pnpm build pass."
       ],
       "startedAt": "2026-05-02T08:58:59.472449+00:00",
-      "completedAt": null,
-      "updatedAt": "2026-05-02T08:58:59.472449+00:00"
+      "completedAt": "2026-05-02T09:27:26.344899+00:00",
+      "updatedAt": "2026-05-02T09:27:26.344899+00:00"
     }
   ]
 }
