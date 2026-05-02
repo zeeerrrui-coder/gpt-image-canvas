@@ -58,7 +58,7 @@ export interface OpenAIImageProviderConfig {
   timeoutMs: number;
 }
 
-const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
+export const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_PROVIDER_IMAGE_BYTES = 100 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -96,13 +96,17 @@ export function getOpenAIImageProviderConfig():
       apiKey,
       baseURL: baseURL || undefined,
       model: getConfiguredImageModel(),
-      timeoutMs: parsePositiveInteger(process.env.OPENAI_IMAGE_TIMEOUT_MS, DEFAULT_OPENAI_IMAGE_TIMEOUT_MS)
+      timeoutMs: parseOpenAIImageTimeoutMs(process.env.OPENAI_IMAGE_TIMEOUT_MS)
     }
   };
 }
 
 export function getConfiguredImageModel(): string {
   return process.env.OPENAI_IMAGE_MODEL?.trim() || IMAGE_MODEL;
+}
+
+export function parseOpenAIImageTimeoutMs(value: string | undefined): number {
+  return parsePositiveInteger(value, DEFAULT_OPENAI_IMAGE_TIMEOUT_MS);
 }
 
 export function createOpenAIImageProvider(config: OpenAIImageProviderConfig): ImageProvider {

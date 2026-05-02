@@ -41,6 +41,17 @@ export const storageConfigs = sqliteTable("storage_configs", {
   updatedAt: text("updated_at").notNull()
 });
 
+export const providerConfigs = sqliteTable("provider_configs", {
+  id: text("id").primaryKey(),
+  sourceOrderJson: text("source_order_json").notNull(),
+  localApiKey: text("local_api_key"),
+  localBaseUrl: text("local_base_url"),
+  localModel: text("local_model"),
+  localTimeoutMs: integer("local_timeout_ms"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
 export const codexOAuthTokens = sqliteTable("codex_oauth_tokens", {
   id: text("id").primaryKey(),
   accessToken: text("access_token"),

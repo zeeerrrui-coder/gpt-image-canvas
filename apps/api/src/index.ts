@@ -15,6 +15,7 @@ import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   OUTPUT_FORMATS,
+  PROVIDER_SOURCE_IDS,
   SIZE_PRESETS,
   STYLE_PRESETS,
   composePrompt,
@@ -24,7 +25,10 @@ import {
   type ImageQuality,
   type ImageSize,
   type OutputFormat,
+  type ProviderSourceId,
   type ReferenceImageInput,
+  type SaveLocalOpenAIProviderConfig,
+  type SaveProviderConfigRequest,
   type SaveStorageConfigRequest,
   type StylePresetId
 } from "./contracts.js";
@@ -44,6 +48,7 @@ import {
   runTextToImageGeneration
 } from "./image-generation.js";
 import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
+import { getProviderConfig, isProviderSourceOrder, saveProviderConfig } from "./provider-config.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
@@ -92,6 +97,26 @@ app.get("/api/config", (c) => {
 });
 
 app.get("/api/auth/status", (c) => c.json(getAuthStatus()));
+
+app.get("/api/provider-config", (c) => c.json(getProviderConfig()));
+
+app.put("/api/provider-config", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseProviderConfigPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(saveProviderConfig(parsed.value));
+  } catch (error) {
+    return c.json(errorResponse("provider_config_error", errorToMessage(error)), 400);
+  }
+});
 
 app.post("/api/auth/codex/device/start", async (c) => {
   try {
@@ -522,6 +547,125 @@ function parseStorageConfigPayload(input: unknown): ParseResult<SaveStorageConfi
   };
 }
 
+function parseProviderConfigPayload(input: unknown): ParseResult<SaveProviderConfigRequest> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Provider config payload must be a JSON object.")
+    };
+  }
+
+  const sourceOrder = parseProviderSourceOrderPayload(input.sourceOrder);
+  if (!sourceOrder.ok) {
+    return sourceOrder;
+  }
+
+  if (input.localOpenAI === undefined) {
+    return {
+      ok: true,
+      value: {
+        sourceOrder: sourceOrder.value
+      }
+    };
+  }
+
+  const localOpenAI = parseLocalOpenAIProviderConfig(input.localOpenAI);
+  if (!localOpenAI.ok) {
+    return localOpenAI;
+  }
+
+  return {
+    ok: true,
+    value: {
+      sourceOrder: sourceOrder.value,
+      localOpenAI: localOpenAI.value
+    }
+  };
+}
+
+function parseProviderSourceOrderPayload(input: unknown): ParseResult<ProviderSourceId[]> {
+  if (!Array.isArray(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_source_order", "Provider source order must be an array.")
+    };
+  }
+
+  if (!isProviderSourceOrder(input)) {
+    return {
+      ok: false,
+      error: errorResponse(
+        "invalid_provider_source_order",
+        `Provider source order must contain each supported source exactly once: ${PROVIDER_SOURCE_IDS.join(", ")}.`
+      )
+    };
+  }
+
+  return {
+    ok: true,
+    value: [...input]
+  };
+}
+
+function parseLocalOpenAIProviderConfig(input: unknown): ParseResult<SaveLocalOpenAIProviderConfig> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Local OpenAI config must be a JSON object.")
+    };
+  }
+
+  const config: SaveLocalOpenAIProviderConfig = {
+    preserveApiKey: input.preserveApiKey === true
+  };
+
+  if (Object.hasOwn(input, "apiKey")) {
+    if (typeof input.apiKey !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Local OpenAI API key must be a string.")
+      };
+    }
+    config.apiKey = input.apiKey;
+  }
+
+  if (Object.hasOwn(input, "baseUrl")) {
+    if (typeof input.baseUrl !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Local OpenAI base URL must be a string.")
+      };
+    }
+    config.baseUrl = input.baseUrl;
+  }
+
+  if (Object.hasOwn(input, "model")) {
+    if (typeof input.model !== "string") {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Local OpenAI model must be a string.")
+      };
+    }
+    config.model = input.model;
+  }
+
+  if (Object.hasOwn(input, "timeoutMs")) {
+    const timeoutMs = parsePositiveIntegerValue(input.timeoutMs);
+    if (!timeoutMs) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_provider_config", "Local OpenAI timeout must be a positive integer.")
+      };
+    }
+    config.timeoutMs = timeoutMs;
+  }
+
+  return {
+    ok: true,
+    value: config
+  };
+}
+
 function parseBaseImagePayload(input: unknown): ParseResult<ImageProviderInput> {
   if (!isRecord(input)) {
     return {
@@ -689,6 +833,17 @@ function parseCount(value: unknown): ParseResult<GenerationCount> {
 
 function parseDimension(value: unknown): number {
   return typeof value === "number" ? value : Number.NaN;
+}
+
+function parsePositiveIntegerValue(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function parseOptionalString(value: unknown): string | undefined {

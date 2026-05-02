@@ -10,11 +10,11 @@ import {
   classifyCodexRefreshFailure,
   parseCodexDevicePollPayload,
   parseCodexDeviceStartPayload,
-  parseCodexTokenPayload,
-  selectImageProviderName
+  parseCodexTokenPayload
 } from "./codex-auth-utils.js";
 import { db } from "./database.js";
 import { ProviderError } from "./image-provider.js";
+import { getProviderConfig } from "./provider-config.js";
 import { codexOAuthTokens } from "./schema.js";
 
 const CODEX_TOKEN_ROW_ID = "default";
@@ -33,16 +33,17 @@ export interface CodexAccessSession {
 }
 
 export function getAuthStatus(): AuthStatusResponse {
-  const codex = codexSessionView(getCodexTokenRow());
-  const openaiConfigured = hasOpenAIImageApiKey();
+  const providerConfig = getProviderConfig();
+  const codex = providerConfig.sources.find((source) => source.id === "codex")?.details.codex ?? codexSessionView(getCodexTokenRow());
+  const openaiConfigured = providerConfig.sources.some(
+    (source) => (source.id === "env-openai" || source.id === "local-openai") && source.available
+  );
 
   return {
-    provider: selectImageProviderName({
-      openaiApiKey: process.env.OPENAI_API_KEY,
-      codexSessionAvailable: codex.available
-    }),
+    provider: providerConfig.activeSource?.provider ?? "none",
     openaiConfigured,
-    codex
+    codex,
+    activeSource: providerConfig.activeSource
   };
 }
 
@@ -390,10 +391,6 @@ function getCodexIssuer(): string {
 
 function getCodexRefreshTokenURL(): string {
   return process.env.CODEX_REFRESH_TOKEN_URL?.trim() || `${getCodexIssuer()}/oauth/token`;
-}
-
-function hasOpenAIImageApiKey(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 
 function authTimeoutMs(): number {
