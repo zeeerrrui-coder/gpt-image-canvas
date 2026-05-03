@@ -225,10 +225,14 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
           <div className="gallery-header__copy">
             <p className="gallery-kicker">
               <Sparkles className="size-3.5" aria-hidden="true" />
-              Editorial Gallery
+              Gallery
             </p>
             <h1>作品图库</h1>
-            <p>{items.length} 张本地作品，按最新生成排序。</p>
+          </div>
+          <div className="gallery-header__meta" aria-label={`${items.length} 张本地作品，按最新生成排序`}>
+            <strong>{items.length}</strong>
+            <span>张作品</span>
+            <span>最新生成</span>
           </div>
           <div className="gallery-search" role="search">
             <Search className="size-4" aria-hidden="true" />
@@ -359,41 +363,41 @@ function FeaturedGalleryItem({
           src={assetPreviewUrl(item.asset.id, 1024)}
           width={item.asset.width}
         />
-        <span className="gallery-feature__badge">Latest</span>
+        <span className="gallery-feature__badge">最新</span>
         <span className="gallery-card__zoom">
           <Maximize2 className="size-4" aria-hidden="true" />
         </span>
       </button>
 
       <div className="gallery-feature__body">
-        <div>
-          <p className="gallery-feature__eyebrow">最新生成</p>
-          <h2>编辑台主图</h2>
-        </div>
         <GalleryTags item={item} />
-        <CollapsiblePrompt
-          expanded={expanded}
-          label="提示词"
-          lines={4}
-          text={item.prompt}
-          onToggle={() => onTogglePrompt(item.outputId)}
-        />
-        <div className="gallery-feature__meta">
-          <span>
-            <Clock3 className="size-3.5" aria-hidden="true" />
-            {formatCreatedTime(item.createdAt)}
-          </span>
-          <span>{item.outputFormat.toUpperCase()}</span>
-          <span>{qualityLabel(item.quality)}</span>
+        <div className="gallery-feature__prompt-panel">
+          <CollapsiblePrompt
+            expanded={expanded}
+            label="提示词"
+            lines={4}
+            text={item.prompt}
+            onToggle={() => onTogglePrompt(item.outputId)}
+          />
         </div>
-        <GalleryIconActions
-          deleting={deleting}
-          item={item}
-          onCopy={onCopy}
-          onDelete={onDelete}
-          onDownload={onDownload}
-          onReuse={onReuse}
-        />
+        <div className="gallery-feature__footer">
+          <div className="gallery-feature__meta">
+            <span>
+              <Clock3 className="size-3.5" aria-hidden="true" />
+              {formatCreatedTime(item.createdAt)}
+            </span>
+            <span>{item.outputFormat.toUpperCase()}</span>
+            <span>{qualityLabel(item.quality)}</span>
+          </div>
+          <GalleryIconActions
+            deleting={deleting}
+            item={item}
+            onCopy={onCopy}
+            onDelete={onDelete}
+            onDownload={onDownload}
+            onReuse={onReuse}
+          />
+        </div>
       </div>
     </article>
   );

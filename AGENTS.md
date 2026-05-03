@@ -10,3 +10,5 @@
 - Keep local agent scratch files under `.codex-temp/`; do not commit local run logs or machine-specific paths.
 - Do not commit `.env`, `.ralph`, `.codex-temp`, `data`, generated images, SQLite databases, or build output.
 - Secrets must only be read from `.env` or the runtime environment and must never be logged.
+- For Ralph-driven work, read `docs/ralph-execution.md` before creating or running a task. Keep Ralph PRDs under `.agents/tasks/`, keep runtime state under `.ralph/`, and keep extra wrapper logs under `.codex-temp/`.
+- When invoking Ralph on Windows, prefer setting `PRD_PATH` and running `.agents/ralph/loop.sh` through Git Bash; avoid CLI flags that rewrite Windows paths unexpectedly.

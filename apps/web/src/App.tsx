@@ -291,13 +291,6 @@ const statusLabels: Record<GenerationStatus, string> = {
   cancelled: "已取消"
 };
 
-const panelStatusStyles: Record<PanelStatusTone, string> = {
-  progress: "panel-status--progress",
-  success: "panel-status--success",
-  warning: "panel-status--warning",
-  error: "panel-status--error"
-};
-
 const historyStatusStyles: Record<GenerationStatus, string> = {
   pending: "history-status--pending",
   running: "history-status--running",
@@ -1595,22 +1588,6 @@ function CanvasThemeSync({ onChange }: { onChange: (isDarkMode: boolean) => void
   return null;
 }
 
-function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
-  if (tone === "progress") {
-    return <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" />;
-  }
-
-  if (tone === "success") {
-    return <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
-  }
-
-  if (tone === "warning") {
-    return <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
-  }
-
-  return <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
-}
-
 function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean): {
   copy: string;
   provider: "openai" | "codex" | "loading" | "none";
@@ -2896,7 +2873,7 @@ export function App() {
 
       <aside
         aria-hidden={isMobileDrawer && !isAiPanelOpen ? true : undefined}
-        aria-labelledby="ai-panel-title"
+        aria-label="AI 生成面板"
         aria-modal={isMobileDrawer && isAiPanelOpen ? true : undefined}
         className="ai-panel fixed inset-y-0 right-0 z-20 flex flex-col border-l border-neutral-200 bg-white shadow-2xl shadow-neutral-950/15"
         data-drawer-state={isAiPanelOpen ? "open" : "closed"}
@@ -2958,9 +2935,6 @@ export function App() {
               </button>
             </div>
           </div>
-          <h1 className="mt-1 text-xl font-semibold text-neutral-950" id="ai-panel-title">
-            生成到画布
-          </h1>
         </div>
 
         <div className="ai-panel-body flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -3024,18 +2998,6 @@ export function App() {
                   {starter.label}
                 </button>
               ))}
-            </div>
-          ) : null}
-
-          {panelStatus ? (
-            <div
-              aria-live={panelStatus.tone === "progress" ? "polite" : "assertive"}
-              className={`panel-status-strip ${panelStatusStyles[panelStatus.tone]}`}
-              data-testid={panelStatus.testId}
-              role={panelStatus.tone === "success" || panelStatus.tone === "progress" ? "status" : "alert"}
-            >
-              <PanelStatusIcon tone={panelStatus.tone} />
-              <p className="min-w-0 flex-1">{panelStatus.message}</p>
             </div>
           ) : null}
 
@@ -3406,8 +3368,10 @@ export function App() {
         <div className="ai-panel-actions grid grid-cols-1 gap-3 border-t border-neutral-200 bg-white px-5 py-4">
           {panelStatus ? (
             <div
+              aria-live={panelStatus.tone === "progress" ? "polite" : "assertive"}
               className={`action-feedback panel-status-strip panel-status--${panelStatus.tone}`}
               data-testid={`action-${panelStatus.testId}`}
+              role={panelStatus.tone === "success" || panelStatus.tone === "progress" ? "status" : "alert"}
             >
               {panelStatus.message}
             </div>
