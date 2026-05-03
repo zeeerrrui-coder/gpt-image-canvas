@@ -26,6 +26,7 @@ import {
   type ProviderSourceView,
   type SaveProviderConfigRequest
 } from "@gpt-image-canvas/shared";
+import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "./i18n";
 
 interface ProviderConfigDialogProps {
   isAuthLoading: boolean;
@@ -50,27 +51,6 @@ interface DialogMessage {
   text: string;
 }
 
-const sourceCopy: Record<
-  ProviderSourceId,
-  {
-    description: string;
-    label: string;
-  }
-> = {
-  "env-openai": {
-    description: "只读读取 .env 或运行时环境变量",
-    label: "环境 OpenAI"
-  },
-  "local-openai": {
-    description: "保存在本机 SQLite 的 OpenAI 兼容配置",
-    label: "本地 OpenAI"
-  },
-  codex: {
-    description: "使用本机 Codex 授权会话",
-    label: "Codex"
-  }
-};
-
 const emptyLocalProviderForm: LocalProviderFormState = {
   apiKey: "",
   baseUrl: "",
@@ -86,6 +66,7 @@ export function ProviderConfigDialog({
   onRefreshAuthStatus,
   onStartCodexLogin
 }: ProviderConfigDialogProps) {
+  const { formatDateTime: formatLocaleDateTime, locale, t } = useI18n();
   const [config, setConfig] = useState<ProviderConfigResponse | null>(null);
   const [sourceOrder, setSourceOrder] = useState<ProviderSourceId[]>([...PROVIDER_SOURCE_IDS]);
   const [localForm, setLocalForm] = useState<LocalProviderFormState>(emptyLocalProviderForm);
@@ -114,7 +95,7 @@ export function ProviderConfigDialog({
       try {
         const response = await fetch("/api/provider-config", { signal });
         if (!response.ok) {
-          throw new Error(await readProviderConfigError(response));
+          throw new Error(await readProviderConfigError(response, locale, t));
         }
 
         const body = (await response.json()) as ProviderConfigResponse;
@@ -128,7 +109,7 @@ export function ProviderConfigDialog({
         if (!signal?.aborted) {
           setMessage({
             tone: "error",
-            text: error instanceof Error ? error.message : "无法读取服务配置。"
+            text: error instanceof Error ? error.message : t("providerConfigLoadFailed")
           });
         }
         return null;
@@ -138,7 +119,7 @@ export function ProviderConfigDialog({
         }
       }
     },
-    []
+    [locale, t]
   );
 
   useEffect(() => {
@@ -276,7 +257,7 @@ export function ProviderConfigDialog({
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
       setMessage({
         tone: "error",
-        text: "本地 API 超时时间必须是正整数毫秒。"
+        text: t("providerLocalTimeoutInvalid")
       });
       return;
     }
@@ -305,7 +286,7 @@ export function ProviderConfigDialog({
         body: JSON.stringify(body)
       });
       if (!response.ok) {
-        throw new Error(await readProviderConfigError(response));
+        throw new Error(await readProviderConfigError(response, locale, t));
       }
 
       const savedConfig = (await response.json()) as ProviderConfigResponse;
@@ -314,13 +295,13 @@ export function ProviderConfigDialog({
       setMessage({
         tone: "success",
         text: savedConfig.activeSource
-          ? `配置已保存，当前使用${sourceLabel(savedConfig.activeSource.id)}。`
-          : "配置已保存，但还没有可用的生成服务。"
+          ? t("providerConfigSavedWithSource", { source: sourceLabel(savedConfig.activeSource.id, t) })
+          : t("providerConfigSavedNoSource")
       });
     } catch (error) {
       setMessage({
         tone: "error",
-        text: error instanceof Error ? error.message : "保存服务配置失败。"
+        text: error instanceof Error ? error.message : t("providerConfigSaveFailed")
       });
     } finally {
       setIsSaving(false);
@@ -348,9 +329,9 @@ export function ProviderConfigDialog({
         <header className="provider-config-dialog__header">
           <div className="min-w-0">
             <p>Provider Console</p>
-            <h2 id="provider-config-title">生成服务配置</h2>
+            <h2 id="provider-config-title">{t("providerConfigTitle")}</h2>
           </div>
-          <button aria-label="关闭生成服务配置" className="provider-config-dialog__close" type="button" onClick={onClose}>
+          <button aria-label={t("providerCloseConfig")} className="provider-config-dialog__close" type="button" onClick={onClose}>
             <X className="size-4" aria-hidden="true" />
           </button>
         </header>
@@ -359,7 +340,7 @@ export function ProviderConfigDialog({
           {isLoading ? (
             <div className="provider-config-loading" data-testid="provider-config-loading" role="status">
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              正在读取生成服务配置
+              {t("providerConfigLoading")}
             </div>
           ) : null}
 
@@ -373,10 +354,10 @@ export function ProviderConfigDialog({
           <section className="provider-config-priority" aria-labelledby="provider-priority-title">
             <div className="provider-section-heading">
               <div>
-                <p>Fallback Order</p>
-                <h3 id="provider-priority-title">优先级</h3>
+                <p>{t("providerFallbackOrder")}</p>
+                <h3 id="provider-priority-title">{t("providerPriorityTitle")}</h3>
               </div>
-              <span>{activeSourceId ? `当前：${sourceLabel(activeSourceId)}` : "当前：暂无可用"}</span>
+              <span>{activeSourceId ? t("providerCurrent", { source: sourceLabel(activeSourceId, t) }) : t("providerCurrentNone")}</span>
             </div>
 
             <ol className="provider-priority-list" data-testid="provider-priority-list">
@@ -392,7 +373,7 @@ export function ProviderConfigDialog({
                     key={sourceId}
                   >
                     <button
-                      aria-label={`拖动调整${sourceLabel(sourceId)}优先级`}
+                      aria-label={t("providerDragSource", { source: sourceLabel(sourceId, t) })}
                       className="provider-priority-item__drag"
                       type="button"
                       onPointerCancel={handlePriorityPointerEnd}
@@ -406,16 +387,16 @@ export function ProviderConfigDialog({
                     <span className="provider-priority-item__icon">
                       <SourceIcon sourceId={sourceId} />
                     </span>
-                    <span className="provider-priority-item__copy">
-                      <strong>{sourceLabel(sourceId)}</strong>
-                      <span>{sourceStatusCopy(source)}</span>
+                      <span className="provider-priority-item__copy">
+                      <strong>{sourceLabel(sourceId, t)}</strong>
+                      <span>{sourceStatusCopy(source, t)}</span>
                     </span>
                     <span className="provider-priority-item__badge" data-available={source?.available ?? false}>
-                      {source?.available ? "可用" : "不可用"}
+                      {source?.available ? t("providerAvailable") : t("providerUnavailable")}
                     </span>
                     <span className="provider-priority-item__buttons">
                       <button
-                        aria-label={`上移${sourceLabel(sourceId)}`}
+                        aria-label={t("providerMoveUp", { source: sourceLabel(sourceId, t) })}
                         className="provider-icon-button"
                         disabled={index === 0}
                         type="button"
@@ -424,7 +405,7 @@ export function ProviderConfigDialog({
                         <ArrowUp className="size-3.5" aria-hidden="true" />
                       </button>
                       <button
-                        aria-label={`下移${sourceLabel(sourceId)}`}
+                        aria-label={t("providerMoveDown", { source: sourceLabel(sourceId, t) })}
                         className="provider-icon-button"
                         disabled={index === sourceOrder.length - 1}
                         type="button"
@@ -438,7 +419,7 @@ export function ProviderConfigDialog({
               })}
             </ol>
             <p className="provider-priority-note">
-              按顺序选择第一个已配置且可用的来源；上游请求已经发出后不会自动切换到下一个来源。
+              {t("providerPriorityNote")}
             </p>
           </section>
 
@@ -446,12 +427,12 @@ export function ProviderConfigDialog({
             <section className="provider-detail-card" data-testid="provider-env-section" aria-labelledby="provider-env-title">
               <ProviderDetailHeader source={envSource} sourceId="env-openai" titleId="provider-env-title" />
               <dl className="provider-readonly-grid">
-                <ReadonlyRow label="API Key" value={envSource?.secret.value ?? (envSource?.secret.hasSecret ? "已保存" : "未设置")} masked />
-                <ReadonlyRow label="Base URL" value={envSource?.details.baseUrl || "官方 OpenAI API"} />
-                <ReadonlyRow label="模型" value={envSource?.details.model || "gpt-image-2"} />
-                <ReadonlyRow label="超时" value={formatTimeout(envSource?.details.timeoutMs)} />
+                <ReadonlyRow label="API Key" value={envSource?.secret.value ?? (envSource?.secret.hasSecret ? t("commonSaved") : t("commonNotSet"))} masked />
+                <ReadonlyRow label={t("providerFieldBaseUrl")} value={envSource?.details.baseUrl || t("providerApiOfficial")} />
+                <ReadonlyRow label={t("providerFieldModel")} value={envSource?.details.model || "gpt-image-2"} />
+                <ReadonlyRow label={t("providerFieldTimeout")} value={formatTimeout(envSource?.details.timeoutMs, t)} />
               </dl>
-              <p className="provider-card-hint">修改 .env 或运行时环境变量后，需要重启 API 服务才会生效。</p>
+              <p className="provider-card-hint">{t("providerCardEnvHint")}</p>
             </section>
 
             <section className="provider-detail-card" data-testid="provider-local-section" aria-labelledby="provider-local-title">
@@ -464,7 +445,7 @@ export function ProviderConfigDialog({
                     className="provider-field__control"
                     data-testid="provider-local-api-key"
                     name="localOpenAIKey"
-                    placeholder={localApiKeyMask ? `已保存：${localApiKeyMask}，输入新 key 可替换` : "粘贴 OpenAI 或兼容端点 API Key"}
+                    placeholder={localApiKeyMask ? t("providerLocalApiKeySaved", { mask: localApiKeyMask }) : t("providerLocalApiKeyPlaceholder")}
                     type="password"
                     value={localForm.apiKey}
                     onChange={(event) => updateLocalForm({ apiKey: event.target.value })}
@@ -473,7 +454,7 @@ export function ProviderConfigDialog({
                 {localApiKeyMask ? (
                   <p className="provider-secret-pill" data-testid="provider-local-api-key-mask">
                     <EyeOff className="size-3.5" aria-hidden="true" />
-                    当前保存值：{localApiKeyMask}
+                    {t("providerSavedSecret", { mask: localApiKeyMask })}
                   </p>
                 ) : null}
                 <label className="provider-field provider-field--span">
@@ -482,13 +463,13 @@ export function ProviderConfigDialog({
                     className="provider-field__control"
                     data-testid="provider-local-base-url"
                     name="localOpenAIBaseUrl"
-                    placeholder="留空使用官方 OpenAI API"
+                    placeholder={t("providerBaseUrlPlaceholder")}
                     value={localForm.baseUrl}
                     onChange={(event) => updateLocalForm({ baseUrl: event.target.value })}
                   />
                 </label>
                 <label className="provider-field">
-                  <span>超时（毫秒）</span>
+                  <span>{t("providerTimeoutMs")}</span>
                   <input
                     className="provider-field__control"
                     data-testid="provider-local-timeout"
@@ -500,9 +481,9 @@ export function ProviderConfigDialog({
                   />
                 </label>
                 <details className="provider-advanced-field provider-field--span">
-                  <summary>高级模型字段</summary>
+                  <summary>{t("providerAdvancedModel")}</summary>
                   <label className="provider-field">
-                    <span>模型</span>
+                    <span>{t("providerFieldModel")}</span>
                     <input
                       className="provider-field__control"
                       data-testid="provider-local-model"
@@ -513,23 +494,23 @@ export function ProviderConfigDialog({
                   </label>
                 </details>
               </div>
-              <p className="provider-card-hint">本地 API Key 只保存到本机 SQLite；读取接口只返回掩码。</p>
+              <p className="provider-card-hint">{t("providerCardLocalHint")}</p>
             </section>
 
             <section className="provider-detail-card" data-testid="provider-codex-section" aria-labelledby="provider-codex-title">
               <ProviderDetailHeader source={codexSource} sourceId="codex" titleId="provider-codex-title" />
               <dl className="provider-readonly-grid">
-                <ReadonlyRow label="账号" value={codex?.email ?? codex?.accountId ?? "未登录"} />
-                <ReadonlyRow label="可用性" value={codex?.available ? "Codex 会话可用" : "Codex 会话不可用"} />
-                <ReadonlyRow label="过期时间" value={formatDateTime(codex?.expiresAt)} />
-                <ReadonlyRow label="刷新时间" value={formatDateTime(codex?.refreshedAt)} />
-                <ReadonlyRow label="不可用原因" value={codex?.unavailableReason || (codex?.available ? "无" : "未找到可用会话")} />
+                <ReadonlyRow label={t("providerFieldAccount")} value={codex?.email ?? codex?.accountId ?? t("providerLoggedOut")} />
+                <ReadonlyRow label={t("providerFieldAvailability")} value={codex?.available ? t("providerStatusCodexCopy") : t("providerSourceMissingCodex")} />
+                <ReadonlyRow label={t("providerFieldExpiresAt")} value={formatOptionalDateTime(codex?.expiresAt, formatLocaleDateTime, t)} />
+                <ReadonlyRow label={t("providerFieldRefreshedAt")} value={formatOptionalDateTime(codex?.refreshedAt, formatLocaleDateTime, t)} />
+                <ReadonlyRow label={t("providerFieldReason")} value={codex?.unavailableReason || (codex?.available ? t("providerNoReason") : t("providerSourceMissingCodex"))} />
               </dl>
               <div className="provider-codex-actions">
                 {codex?.available ? (
                   <button className="secondary-action h-10" disabled={isAuthLoading} data-testid="provider-codex-logout" type="button" onClick={() => void handleLogoutCodex()}>
                     {isAuthLoading ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <LogOut className="size-4" aria-hidden="true" />}
-                    退出 Codex
+                    {t("providerLogoutCodex")}
                   </button>
                 ) : (
                   <button
@@ -540,7 +521,7 @@ export function ProviderConfigDialog({
                     onClick={handleStartCodexLogin}
                   >
                     {isCodexStarting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-                    登录 Codex
+                    {t("providerLoginCodex")}
                   </button>
                 )}
               </div>
@@ -551,11 +532,11 @@ export function ProviderConfigDialog({
         <footer className="provider-config-dialog__footer">
           <button className="secondary-action h-10" disabled={isLoading || isSaving} type="button" onClick={() => void loadProviderConfig()}>
             <RefreshCcw className="size-4" aria-hidden="true" />
-            重新读取
+            {t("providerRefresh")}
           </button>
           <button className="primary-action h-10" data-testid="provider-config-save" disabled={isLoading || isSaving || !config} type="button" onClick={() => void saveProviderConfig()}>
             {isSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Save className="size-4" aria-hidden="true" />}
-            保存配置
+            {t("providerSave")}
           </button>
         </footer>
       </div>
@@ -574,18 +555,20 @@ function ProviderDetailHeader({
   sourceId: ProviderSourceId;
   titleId: string;
 }) {
+  const { t } = useI18n();
+
   return (
     <header className="provider-detail-card__header">
       <span className="provider-detail-card__icon">
         <SourceIcon sourceId={sourceId} />
       </span>
       <div className="min-w-0">
-        <p>{sourceCopy[sourceId].description}</p>
-        <h3 id={titleId}>{sourceLabel(sourceId)}</h3>
+        <p>{t("sourceDescription", { sourceId })}</p>
+        <h3 id={titleId}>{sourceLabel(sourceId, t)}</h3>
       </div>
       <span className="provider-source-status" data-available={source?.available ?? false}>
         {source?.available ? <ShieldCheck className="size-3.5" aria-hidden="true" /> : <AlertTriangle className="size-3.5" aria-hidden="true" />}
-        {source?.available ? "可用" : "不可用"}
+        {source?.available ? t("providerAvailable") : t("providerUnavailable")}
       </span>
     </header>
   );
@@ -612,61 +595,57 @@ function SourceIcon({ sourceId }: { sourceId: ProviderSourceId }) {
   return <UserRound className="size-4" aria-hidden="true" />;
 }
 
-function sourceLabel(sourceId: ProviderSourceId): string {
-  return sourceCopy[sourceId].label;
+function sourceLabel(sourceId: ProviderSourceId, t: Translate): string {
+  return t("sourceLabel", { sourceId });
 }
 
-function sourceStatusCopy(source: ProviderSourceView | undefined): string {
+function sourceStatusCopy(source: ProviderSourceView | undefined, t: Translate): string {
   if (!source) {
-    return "等待读取状态";
+    return t("providerSourcePending");
   }
 
   if (source.available) {
-    return "已配置，可参与生成";
+    return t("providerSourceConfigured");
   }
 
   if (source.id === "codex") {
-    return source.details.codex?.unavailableReason || "未登录 Codex 或会话不可用";
+    return source.details.codex?.unavailableReason || t("providerSourceMissingCodex");
   }
 
   if (source.id === "local-openai") {
-    return "未保存本地 API Key";
+    return t("providerSourceMissingKey");
   }
 
-  return "未设置 OPENAI_API_KEY";
+  return t("providerSourceMissingOpenAIKey");
 }
 
-function formatTimeout(value: number | undefined): string {
+function formatTimeout(value: number | undefined, t: Translate): string {
   if (!value) {
-    return "未设置";
+    return t("commonNotSet");
   }
 
   return `${value} ms`;
 }
 
-function formatDateTime(value: string | undefined): string {
+function formatOptionalDateTime(value: string | undefined, formatDateTime: (value: string) => string, t: Translate): string {
   if (!value) {
-    return "未记录";
+    return t("commonNotRecorded");
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+  return formatDateTime(value);
 }
 
-async function readProviderConfigError(response: Response): Promise<string> {
+async function readProviderConfigError(response: Response, locale: Locale, t: Translate): Promise<string> {
   try {
-    const body = (await response.json()) as { error?: { message?: string } };
-    return body.error?.message ? `${body.error.message}（HTTP ${response.status}）` : `服务配置请求失败，状态 ${response.status}。`;
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return localizedApiErrorMessage({
+      code: body.error?.code,
+      fallbackMessage: body.error?.message,
+      fallbackText: t("providerConfigRequestFailed", { status: response.status }),
+      locale,
+      status: response.status
+    });
   } catch {
-    return `服务配置请求失败，状态 ${response.status}。`;
+    return t("providerConfigRequestFailed", { status: response.status });
   }
 }

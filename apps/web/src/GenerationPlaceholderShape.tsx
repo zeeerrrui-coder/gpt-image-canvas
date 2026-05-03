@@ -1,4 +1,5 @@
 import { BaseBoxShapeUtil, HTMLContainer, RecordProps, T, TLShape } from "tldraw";
+import { useI18n } from "./i18n";
 
 export const GENERATION_PLACEHOLDER_TYPE = "generation-placeholder" as const;
 
@@ -23,9 +24,38 @@ declare module "@tldraw/tlschema" {
 
 export type GenerationPlaceholderShape = TLShape<typeof GENERATION_PLACEHOLDER_TYPE>;
 
-function conciseError(message: string): string {
-  const trimmed = message.trim() || "生成失败，请重试。";
+function conciseError(message: string, fallback: string): string {
+  const trimmed = message.trim() || fallback;
   return trimmed.length > 46 ? `${trimmed.slice(0, 46)}...` : trimmed;
+}
+
+function GenerationPlaceholderContent({ shape }: { shape: GenerationPlaceholderShape }) {
+  const { t } = useI18n();
+  const isFailed = shape.props.status === "failed";
+
+  return (
+    <HTMLContainer
+      className={`generation-placeholder-shape ${isFailed ? "is-failed" : "is-loading"}`}
+      data-generation-placeholder-status={shape.props.status}
+    >
+      <div className="generation-placeholder-shape__content">
+        {isFailed ? (
+          <div className="generation-placeholder-shape__error-mark" aria-hidden="true">
+            !
+          </div>
+        ) : (
+          <div className="generation-placeholder-shape__spinner" aria-hidden="true" />
+        )}
+        <div className="generation-placeholder-shape__title">{isFailed ? t("generationCanvasFailed") : t("generationCanvasLoading")}</div>
+        <div className="generation-placeholder-shape__size">
+          {shape.props.targetWidth} x {shape.props.targetHeight}px
+        </div>
+        <div className="generation-placeholder-shape__copy">
+          {isFailed ? conciseError(shape.props.error, t("generationErrorDefault")) : "gpt-image-canvas"}
+        </div>
+      </div>
+    </HTMLContainer>
+  );
 }
 
 export class GenerationPlaceholderShapeUtil extends BaseBoxShapeUtil<GenerationPlaceholderShape> {
@@ -67,31 +97,7 @@ export class GenerationPlaceholderShapeUtil extends BaseBoxShapeUtil<GenerationP
   }
 
   override component(shape: GenerationPlaceholderShape) {
-    const isFailed = shape.props.status === "failed";
-
-    return (
-      <HTMLContainer
-        className={`generation-placeholder-shape ${isFailed ? "is-failed" : "is-loading"}`}
-        data-generation-placeholder-status={shape.props.status}
-      >
-        <div className="generation-placeholder-shape__content">
-          {isFailed ? (
-            <div className="generation-placeholder-shape__error-mark" aria-hidden="true">
-              !
-            </div>
-          ) : (
-            <div className="generation-placeholder-shape__spinner" aria-hidden="true" />
-          )}
-          <div className="generation-placeholder-shape__title">{isFailed ? "画布生成失败" : "生成到画布中"}</div>
-          <div className="generation-placeholder-shape__size">
-            {shape.props.targetWidth} x {shape.props.targetHeight}px
-          </div>
-          <div className="generation-placeholder-shape__copy">
-            {isFailed ? conciseError(shape.props.error) : "gpt-image-canvas"}
-          </div>
-        </div>
-      </HTMLContainer>
-    );
+    return <GenerationPlaceholderContent shape={shape} />;
   }
 
   override indicator(shape: GenerationPlaceholderShape) {

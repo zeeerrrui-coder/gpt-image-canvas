@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { AuthStatusResponse } from "@gpt-image-canvas/shared";
 import productPreviewUrl from "../../../docs/assets/app-preview.png";
+import { useI18n } from "./i18n";
 
 interface HomePageProps {
   authError: string;
@@ -30,8 +31,9 @@ export function HomePage({
   onOpenGallery,
   onStartCodexLogin
 }: HomePageProps) {
+  const { t } = useI18n();
   const providerLabel =
-    authStatus?.provider === "openai" ? "OpenAI API 已接入" : authStatus?.provider === "codex" ? "Codex 会话已可用" : "等待接入生成服务";
+    authStatus?.provider === "openai" ? t("homeProviderOpenAI") : authStatus?.provider === "codex" ? t("homeProviderCodex") : t("homeProviderNone");
 
   return (
     <main className="home-page app-view" data-testid="home-page">
@@ -43,12 +45,12 @@ export function HomePage({
         <div className="home-hero__copy">
           <p className="home-kicker">
             <Sparkles className="size-4" aria-hidden="true" />
-            专业 AI 画布
+            {t("homeKicker")}
           </p>
-          <h1 id="home-title">专业 AI 画布</h1>
-          <p className="home-deck">把提示词、参考图、生成历史和视觉比较收束到一张本地画布里。</p>
+          <h1 id="home-title">{t("homeTitle")}</h1>
+          <p className="home-deck">{t("homeDeck")}</p>
 
-          <div className="home-actions" aria-label="进入方式">
+          <div className="home-actions" aria-label={t("homeEntryAria")}>
             <button
               className="home-action home-action--primary"
               data-testid="home-codex-login"
@@ -57,11 +59,11 @@ export function HomePage({
               onClick={onStartCodexLogin}
             >
               {isCodexStarting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <KeyRound className="size-4" aria-hidden="true" />}
-              Codex 登录
+              {t("homeStartCodex")}
             </button>
             <button className="home-action home-action--secondary" data-testid="home-api-setup" type="button" onClick={onOpenProviderConfig}>
               <Terminal className="size-4" aria-hidden="true" />
-              接入 API
+              {t("homeApiSetup")}
             </button>
           </div>
 
@@ -75,7 +77,7 @@ export function HomePage({
                 <ShieldCheck className="size-4" aria-hidden="true" />
               )}
             </span>
-            <span>{isAuthLoading ? "正在检查本地凭据" : providerLabel}</span>
+            <span>{isAuthLoading ? t("homeAuthChecking") : providerLabel}</span>
           </div>
 
           {authError ? (
@@ -86,16 +88,16 @@ export function HomePage({
         </div>
       </section>
 
-      <section className="home-afterfold" aria-label="创作入口">
+      <section className="home-afterfold" aria-label={t("homeAfterfoldAria")}>
         <div className="home-afterfold__item">
           <span>
             <CheckCircle2 className="size-4" aria-hidden="true" />
           </span>
-          <p>API Key 只在服务端环境读取，浏览器不会保存或回显密钥。</p>
+          <p>{t("homeSecurityNote")}</p>
         </div>
         <button className="home-gallery-link" data-testid="home-gallery-link" type="button" onClick={onOpenGallery}>
           <ImageIcon className="size-4" aria-hidden="true" />
-          打开 Gallery
+          {t("homeGallery")}
           <ArrowRight className="size-4" aria-hidden="true" />
         </button>
       </section>

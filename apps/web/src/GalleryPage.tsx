@@ -21,9 +21,9 @@ import {
   SIZE_PRESETS,
   STYLE_PRESETS,
   type GalleryImageItem,
-  type GalleryResponse,
-  type StylePresetId
+  type GalleryResponse
 } from "@gpt-image-canvas/shared";
+import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "./i18n";
 
 interface GalleryPageProps {
   onDeleted: (outputId: string) => void;
@@ -37,28 +37,8 @@ interface GalleryActionHandlers {
   onReuse: (item: GalleryImageItem) => void;
 }
 
-const stylePresetLabels: Record<StylePresetId, string> = {
-  none: "无风格",
-  photoreal: "真实摄影",
-  product: "商业产品",
-  illustration: "精致插画",
-  poster: "海报视觉",
-  avatar: "头像角色"
-};
-
-const sizePresetLabels: Record<string, string> = {
-  "square-1k": "方形成图 1K",
-  "poster-portrait": "竖版海报",
-  "poster-landscape": "横版海报",
-  "story-9-16": "竖屏故事",
-  "video-16-9": "视频封面",
-  "wide-2k": "宽屏展示 2K",
-  "portrait-2k": "高清竖图 2K",
-  "square-2k": "高清方图 2K",
-  "wide-4k": "宽屏展示 4K"
-};
-
 export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
+  const { locale, t } = useI18n();
   const [items, setItems] = useState<GalleryImageItem[]>([]);
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -82,12 +62,12 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
           signal: controller.signal
         });
         if (!response.ok) {
-          throw new Error(await readGalleryError(response));
+          throw new Error(await readGalleryError(response, locale, t));
         }
 
         const body = (await response.json()) as GalleryResponse;
         if (!Array.isArray(body.items)) {
-          throw new Error("Gallery 服务返回了无法识别的数据。");
+          throw new Error(t("galleryServiceInvalidData"));
         }
 
         if (!controller.signal.aborted) {
@@ -95,7 +75,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
         }
       } catch (loadError) {
         if (!controller.signal.aborted) {
-          setError(loadError instanceof Error ? loadError.message : "Gallery 加载失败。");
+          setError(loadError instanceof Error ? loadError.message : t("galleryLoadFailed"));
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -109,7 +89,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [locale, t]);
 
   useEffect(() => {
     if (!selectedItem && !pendingDeleteItem) {
@@ -178,15 +158,15 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   async function copyPrompt(item: GalleryImageItem): Promise<void> {
     try {
       await writeClipboardText(item.prompt);
-      showStatus("已复制提示词。");
+      showStatus(t("galleryCopiedPrompt"));
     } catch {
-      setError("复制失败，请手动选择提示词。");
+      setError(t("generationCopyFailed"));
     }
   }
 
   function downloadItem(item: GalleryImageItem): void {
     window.open(`/api/assets/${encodeURIComponent(item.asset.id)}/download`, "_blank", "noopener,noreferrer");
-    showStatus("已打开原图下载。");
+    showStatus(t("galleryOpenDownload"));
   }
 
   function requestDelete(item: GalleryImageItem): void {
@@ -203,16 +183,16 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
         method: "DELETE"
       });
       if (!response.ok) {
-        throw new Error(await readGalleryError(response));
+        throw new Error(await readGalleryError(response, locale, t));
       }
 
       setItems((current) => current.filter((galleryItem) => galleryItem.outputId !== item.outputId));
       setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
       setPendingDeleteItem(null);
       onDeleted(item.outputId);
-      showStatus("已从 Gallery 和生成历史移除。");
+      showStatus(t("galleryDeleted"));
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "删除失败，请重试。");
+      setError(deleteError instanceof Error ? deleteError.message : t("galleryDeleteFailed"));
     } finally {
       setDeletingOutputId(null);
     }
@@ -225,24 +205,24 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
           <div className="gallery-header__copy">
             <p className="gallery-kicker">
               <Sparkles className="size-3.5" aria-hidden="true" />
-              Gallery
+              {t("galleryKicker")}
             </p>
-            <h1>作品图库</h1>
+            <h1>{t("galleryTitle")}</h1>
           </div>
-          <div className="gallery-header__meta" aria-label={`${items.length} 张本地作品，按最新生成排序`}>
+          <div className="gallery-header__meta" aria-label={t("galleryHeaderMeta", { count: items.length })}>
             <strong>{items.length}</strong>
-            <span>张作品</span>
-            <span>最新生成</span>
+            <span>{t("galleryWorkCount")}</span>
+            <span>{t("galleryWorkSort")}</span>
           </div>
           <div className="gallery-search" role="search">
             <Search className="size-4" aria-hidden="true" />
             <input
-              aria-label="搜索 Gallery 提示词"
+              aria-label={t("gallerySearchAria")}
               className="gallery-search__input"
               data-testid="gallery-search"
               id="gallery-search-input"
               name="gallery-search"
-              placeholder="搜索提示词、主题或风格"
+              placeholder={t("gallerySearchPlaceholder")}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -265,14 +245,14 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
         {isLoading ? (
           <div className="gallery-empty-state" data-testid="gallery-loading" role="status">
             <Loader2 className="size-5 animate-spin" aria-hidden="true" />
-            <p>正在载入 Gallery...</p>
+            <p>{t("galleryLoading")}</p>
           </div>
         ) : filteredItems.length === 0 ? (
           <div className="gallery-empty-state" data-testid="gallery-empty">
             <ImageIcon className="size-7" aria-hidden="true" />
             <div>
-              <p>{items.length === 0 ? "暂无作品" : "没有匹配结果"}</p>
-              <span>{items.length === 0 ? "生成成功的图片会出现在这里。" : "换一个提示词关键词再试试。"}</span>
+              <p>{items.length === 0 ? t("galleryEmpty") : t("galleryNoMatches")}</p>
+              <span>{items.length === 0 ? t("galleryEmptyHint") : t("galleryNoMatchesHint")}</span>
             </div>
           </div>
         ) : (
@@ -348,10 +328,12 @@ function FeaturedGalleryItem({
   onOpen: (item: GalleryImageItem) => void;
   onTogglePrompt: (outputId: string) => void;
 } & GalleryActionHandlers) {
+  const { formatDateTime, t } = useI18n();
+
   return (
     <article className="gallery-feature" data-testid="gallery-feature">
       <button
-        aria-label={`打开最新作品详情：${promptExcerpt(item.prompt)}`}
+        aria-label={t("galleryActionOpenLatest", { excerpt: promptExcerpt(item.prompt) })}
         className="gallery-feature__image-button"
         type="button"
         onClick={() => onOpen(item)}
@@ -363,7 +345,7 @@ function FeaturedGalleryItem({
           src={assetPreviewUrl(item.asset.id, 1024)}
           width={item.asset.width}
         />
-        <span className="gallery-feature__badge">最新</span>
+        <span className="gallery-feature__badge">{t("galleryBadgeLatest")}</span>
         <span className="gallery-card__zoom">
           <Maximize2 className="size-4" aria-hidden="true" />
         </span>
@@ -374,7 +356,7 @@ function FeaturedGalleryItem({
         <div className="gallery-feature__prompt-panel">
           <CollapsiblePrompt
             expanded={expanded}
-            label="提示词"
+            label={t("galleryPromptLabel")}
             lines={4}
             text={item.prompt}
             onToggle={() => onTogglePrompt(item.outputId)}
@@ -384,10 +366,10 @@ function FeaturedGalleryItem({
           <div className="gallery-feature__meta">
             <span>
               <Clock3 className="size-3.5" aria-hidden="true" />
-              {formatCreatedTime(item.createdAt)}
+              {formatCreatedTime(item.createdAt, formatDateTime)}
             </span>
             <span>{item.outputFormat.toUpperCase()}</span>
-            <span>{qualityLabel(item.quality)}</span>
+            <span>{t("qualityLabel", { quality: item.quality })}</span>
           </div>
           <GalleryIconActions
             deleting={deleting}
@@ -420,10 +402,12 @@ function GalleryCard({
   onOpen: (item: GalleryImageItem) => void;
   onTogglePrompt: (outputId: string) => void;
 } & GalleryActionHandlers) {
+  const { formatDateTime, t } = useI18n();
+
   return (
     <article className="gallery-card" data-testid="gallery-card">
       <button
-        aria-label={`打开图片详情：${promptExcerpt(item.prompt)}`}
+        aria-label={t("galleryActionOpenImage", { excerpt: promptExcerpt(item.prompt) })}
         className="gallery-card__image-button"
         type="button"
         onClick={() => onOpen(item)}
@@ -445,7 +429,7 @@ function GalleryCard({
         <GalleryTags item={item} compact />
         <CollapsiblePrompt
           expanded={expanded}
-          label="提示词"
+          label={t("galleryPromptLabel")}
           lines={2}
           text={item.prompt}
           onToggle={() => onTogglePrompt(item.outputId)}
@@ -453,7 +437,7 @@ function GalleryCard({
         <div className="gallery-card__footer">
           <span className="gallery-time-tag">
             <Clock3 className="size-3.5" aria-hidden="true" />
-            {formatCreatedTime(item.createdAt)}
+            {formatCreatedTime(item.createdAt, formatDateTime)}
           </span>
           <GalleryIconActions
             deleting={deleting}
@@ -480,42 +464,43 @@ function GalleryIconActions({
   deleting: boolean;
   item: GalleryImageItem;
 } & GalleryActionHandlers) {
+  const { t } = useI18n();
   const excerpt = promptExcerpt(item.prompt);
 
   return (
     <div className="gallery-card__actions">
       <button
-        aria-label={`复制提示词：${excerpt}`}
+        aria-label={t("galleryActionCopyPrompt", { excerpt })}
         className="gallery-icon-action"
-        title="复制提示词"
+        title={t("galleryPromptLabel")}
         type="button"
         onClick={() => onCopy(item)}
       >
         <Copy className="size-4" aria-hidden="true" />
       </button>
       <button
-        aria-label={`下载图片：${excerpt}`}
+        aria-label={t("galleryActionDownloadImage", { excerpt })}
         className="gallery-icon-action"
-        title="下载原图"
+        title={t("galleryDownloadOriginal")}
         type="button"
         onClick={() => onDownload(item)}
       >
         <Download className="size-4" aria-hidden="true" />
       </button>
       <button
-        aria-label={`复用提示词：${excerpt}`}
+        aria-label={t("galleryActionReusePrompt", { excerpt })}
         className="gallery-icon-action"
-        title="复用到画布"
+        title={t("galleryReuseToCanvas")}
         type="button"
         onClick={() => onReuse(item)}
       >
         <RotateCcw className="size-4" aria-hidden="true" />
       </button>
       <button
-        aria-label={`删除 Gallery 图片：${excerpt}`}
+        aria-label={t("galleryActionDeleteImage", { excerpt })}
         className="gallery-icon-action gallery-icon-action--danger"
         disabled={deleting}
-        title="从 Gallery 移除"
+        title={t("galleryRemovedTitle")}
         type="button"
         onClick={() => onDelete(item)}
       >
@@ -526,12 +511,13 @@ function GalleryIconActions({
 }
 
 function GalleryTags({ item, compact = false }: { item: GalleryImageItem; compact?: boolean }) {
-  const styleLabel = styleTagLabel(item.presetId);
-  const sizeLabel = sizeTagLabel(item);
+  const { t } = useI18n();
+  const styleLabel = styleTagLabel(item.presetId, t);
+  const sizeLabel = sizeTagLabel(item, t);
 
   return (
     <div className="gallery-tags" data-compact={compact}>
-      <span className="gallery-tag gallery-tag--mode">{modeLabel(item.mode)}</span>
+      <span className="gallery-tag gallery-tag--mode">{t("galleryModeLabel", { mode: item.mode })}</span>
       {styleLabel ? (
         <span className="gallery-tag gallery-tag--style">
           <Palette className="size-3.5" aria-hidden="true" />
@@ -559,6 +545,8 @@ function CollapsiblePrompt({
   text: string;
   onToggle: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <section className="gallery-prompt-block">
       <div className="gallery-prompt-heading">
@@ -570,7 +558,7 @@ function CollapsiblePrompt({
           type="button"
           onClick={onToggle}
         >
-          {expanded ? "收起" : "展开"}
+          {expanded ? t("galleryToggleCollapse") : t("galleryToggleExpand")}
           <ChevronDown className="size-3.5" aria-hidden="true" />
         </button>
       </div>
@@ -599,17 +587,18 @@ function GalleryDetailDialog({
   onReuse: () => void;
 }) {
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const { formatDateTime, t } = useI18n();
 
   return (
     <div className="gallery-modal-backdrop" data-testid="gallery-detail" role="presentation">
       <div aria-labelledby="gallery-detail-title" aria-modal="true" className="gallery-modal" role="dialog">
         <header className="gallery-modal__header">
           <div className="gallery-modal__title">
-            <p>Gallery Detail</p>
-            <h2 id="gallery-detail-title">图片详情</h2>
+            <p>{t("galleryDetailEyebrow")}</p>
+            <h2 id="gallery-detail-title">{t("galleryDetailTitle")}</h2>
             <GalleryTags item={item} />
           </div>
-          <button aria-label="关闭图片详情" className="gallery-icon-action gallery-modal__close" type="button" onClick={onClose}>
+          <button aria-label={t("commonClose")} className="gallery-icon-action gallery-modal__close" type="button" onClick={onClose}>
             <X className="size-4" aria-hidden="true" />
           </button>
         </header>
@@ -628,15 +617,15 @@ function GalleryDetailDialog({
           <aside className="gallery-modal__copy">
             <div className="gallery-modal__meta">
               <span>
-                <Clock3 className="size-3.5" aria-hidden="true" />
-                {formatCreatedTime(item.createdAt)}
+              <Clock3 className="size-3.5" aria-hidden="true" />
+                {formatCreatedTime(item.createdAt, formatDateTime)}
               </span>
               <span>{item.outputFormat.toUpperCase()}</span>
-              <span>{qualityLabel(item.quality)}</span>
+              <span>{t("qualityLabel", { quality: item.quality })}</span>
             </div>
             <CollapsiblePrompt
               expanded={promptExpanded}
-              label="提示词"
+              label={t("galleryPromptLabel")}
               lines={8}
               text={item.prompt}
               onToggle={() => setPromptExpanded((current) => !current)}
@@ -647,19 +636,19 @@ function GalleryDetailDialog({
         <footer className="gallery-modal__actions">
           <button className="secondary-action h-10" type="button" onClick={onCopy}>
             <Copy className="size-4" aria-hidden="true" />
-            复制
+            {t("commonCopy")}
           </button>
           <button className="secondary-action h-10" type="button" onClick={onDownload}>
             <Download className="size-4" aria-hidden="true" />
-            下载
+            {t("commonDownload")}
           </button>
           <button className="secondary-action h-10" type="button" onClick={onReuse}>
             <RotateCcw className="size-4" aria-hidden="true" />
-            复用
+            {t("commonReuse")}
           </button>
           <button className="secondary-action h-10 text-red-700 hover:text-red-800" disabled={deleting} type="button" onClick={onDelete}>
             {deleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
-            移除
+            {t("commonRemove")}
           </button>
         </footer>
       </div>
@@ -678,6 +667,8 @@ function DeleteGalleryDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="gallery-confirm-backdrop" data-testid="gallery-delete-dialog" role="presentation">
       <div
@@ -691,18 +682,18 @@ function DeleteGalleryDialog({
           <AlertTriangle className="size-5" aria-hidden="true" />
         </div>
         <div className="gallery-confirm__copy">
-          <h2 id="gallery-delete-title">移除这张 Gallery 图片？</h2>
+          <h2 id="gallery-delete-title">{t("galleryConfirmDeleteTitle")}</h2>
           <p id="gallery-delete-description">
-            将从 Gallery 和生成历史移除“{promptExcerpt(item.prompt)}”。画布中的图片、本地文件和资产记录会保留。
+            {t("galleryConfirmDeleteBody", { excerpt: promptExcerpt(item.prompt) })}
           </p>
         </div>
         <div className="gallery-confirm__actions">
           <button className="secondary-action h-10" disabled={deleting} type="button" onClick={onCancel}>
-            取消
+            {t("commonCancel")}
           </button>
           <button className="danger-action h-10" disabled={deleting} type="button" onClick={onConfirm}>
             {deleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
-            确认移除
+            {t("galleryConfirmRemove")}
           </button>
         </div>
       </div>
@@ -714,37 +705,19 @@ function assetPreviewUrl(assetId: string, width: number): string {
   return `/api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`;
 }
 
-function modeLabel(mode: GalleryImageItem["mode"]): string {
-  return mode === "edit" ? "参考图" : "文生图";
-}
-
-function styleTagLabel(presetId: string): string {
+function styleTagLabel(presetId: string, t: Translate): string {
   if (presetId === "none") {
     return "";
   }
 
   const preset = STYLE_PRESETS.find((item) => item.id === presetId);
-  return preset ? (stylePresetLabels[preset.id] ?? preset.label) : "";
+  return preset ? t("stylePresetLabel", { presetId: preset.id, fallback: preset.label }) : "";
 }
 
-function sizeTagLabel(item: GalleryImageItem): string {
+function sizeTagLabel(item: GalleryImageItem, t: Translate): string {
   const preset = SIZE_PRESETS.find((sizePreset) => sizePreset.width === item.size.width && sizePreset.height === item.size.height);
-  const presetLabel = preset ? (sizePresetLabels[preset.id] ?? preset.label) : "自定义";
+  const presetLabel = preset ? t("sizePresetLabel", { presetId: preset.id, fallback: preset.label }) : t("customSize");
   return `${presetLabel} · ${item.size.width} x ${item.size.height}`;
-}
-
-function qualityLabel(quality: GalleryImageItem["quality"]): string {
-  switch (quality) {
-    case "low":
-      return "快速草稿";
-    case "medium":
-      return "标准";
-    case "high":
-      return "高质量";
-    case "auto":
-    default:
-      return "自动质量";
-  }
 }
 
 function promptExcerpt(promptValue: string): string {
@@ -752,30 +725,26 @@ function promptExcerpt(promptValue: string): string {
   return compact.length > 48 ? `${compact.slice(0, 48)}...` : compact;
 }
 
-function formatCreatedTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+function formatCreatedTime(value: string, formatDateTime: (value: string) => string): string {
+  return formatDateTime(value);
 }
 
 function normalizeSearchText(value: string): string {
   return value.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
 }
 
-async function readGalleryError(response: Response): Promise<string> {
+async function readGalleryError(response: Response, locale: Locale, t: Translate): Promise<string> {
   try {
-    const body = (await response.json()) as { error?: { message?: string } };
-    return body.error?.message ? `${body.error.message}（HTTP ${response.status}）` : `请求失败，状态 ${response.status}。`;
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return localizedApiErrorMessage({
+      code: body.error?.code,
+      fallbackMessage: body.error?.message,
+      fallbackText: t("galleryRequestFailed", { status: response.status }),
+      locale,
+      status: response.status
+    });
   } catch {
-    return `请求失败，状态 ${response.status}。`;
+    return t("galleryRequestFailed", { status: response.status });
   }
 }
 

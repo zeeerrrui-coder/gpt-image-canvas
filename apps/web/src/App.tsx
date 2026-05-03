@@ -35,8 +35,10 @@ import {
   type TLStoreSnapshot,
   type TLComponents,
   type TldrawOptions,
+  type TLUserPreferences,
   useIsDarkMode,
   useEditor,
+  useTldrawUser,
   useValue
 } from "tldraw";
 import {
@@ -49,10 +51,14 @@ import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import {
   CUSTOM_SIZE_PRESET_ID,
   GENERATION_COUNTS,
+  IMAGE_SIZE_MULTIPLE,
   IMAGE_QUALITIES,
+  MAX_IMAGE_ASPECT_RATIO,
   MAX_IMAGE_DIMENSION,
   MAX_REFERENCE_IMAGES,
+  MAX_TOTAL_PIXELS,
   MIN_IMAGE_DIMENSION,
+  MIN_TOTAL_PIXELS,
   OUTPUT_FORMATS,
   SIZE_PRESETS,
   STYLE_PRESETS,
@@ -71,6 +77,7 @@ import {
   type GeneratedAsset,
   type ImageQuality,
   type ImageSize,
+  type ImageSizeValidationReason,
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
@@ -81,6 +88,7 @@ import {
   type StorageTestResult,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
+import { LOCALES, localizedApiErrorMessage, useI18n, type Locale, type Translate } from "./i18n";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const HISTORY_COLLAPSED_LIMIT = 3;
@@ -103,6 +111,23 @@ const tldrawOptions = {
 } satisfies Partial<TldrawOptions>;
 const TLDRAW_LICENSE_KEY =
   "tldraw-2026-08-08/WyJ3dGU4bldjRyIsWyIqIl0sMTYsIjIwMjYtMDgtMDgiXQ.Xt7lTydUhMnKfHfp+g8Mrs9gtJjlB8uPyYMniFEfRfruCYdYEl9J0uZl0lMAf6o7GdDB1zXOVhWLFAipssI6Cw";
+const TLDRAW_USER_ID = "gpt-image-canvas-local-user";
+
+function tldrawLocaleForLocale(locale: Locale): NonNullable<TLUserPreferences["locale"]> {
+  return locale === "zh-CN" ? "zh-cn" : "en";
+}
+
+function localeForTldrawLocale(locale: TLUserPreferences["locale"]): Locale | undefined {
+  if (locale === "zh-cn") {
+    return "zh-CN";
+  }
+
+  if (locale === "en") {
+    return "en";
+  }
+
+  return undefined;
+}
 
 const defaultStorageConfigForm: StorageConfigFormState = {
   enabled: false,
@@ -126,20 +151,20 @@ const canvasAssetStore: TLAssetStore = {
 
 const promptStarters = [
   {
-    label: "产品海报",
-    prompt: "一张高端护肤品产品海报，水面反光，精致布光，留出清晰标题空间"
+    labelKey: "promptStarterProductLabel",
+    promptKey: "promptStarterProductPrompt"
   },
   {
-    label: "室内空间",
-    prompt: "一间安静的现代工作室，清晨自然光，木质家具，干净构图"
+    labelKey: "promptStarterInteriorLabel",
+    promptKey: "promptStarterInteriorPrompt"
   },
   {
-    label: "角色头像",
-    prompt: "一个原创角色头像，温暖表情，清爽背景，细腻插画质感"
+    labelKey: "promptStarterAvatarLabel",
+    promptKey: "promptStarterAvatarPrompt"
   },
   {
-    label: "城市夜景",
-    prompt: "未来城市夜景，雨后街道，霓虹倒影，电影感光影"
+    labelKey: "promptStarterCityLabel",
+    promptKey: "promptStarterCityPrompt"
   }
 ] as const;
 const quickSizePresetIds = new Set(["square-1k", "poster-portrait", "poster-landscape", "story-9-16", "video-16-9", "wide-2k"]);
@@ -243,58 +268,12 @@ type ReferenceSelection =
       hint: string;
     };
 
-const missingReferenceSelection: ReferenceSelection = {
-  status: "none",
-  hint: `选择画布中的 1-${MAX_REFERENCE_IMAGES} 张图片后，可用它们作为参考生成到画布。`
-};
-
-const qualityLabels: Record<ImageQuality, string> = {
-  auto: "自动",
-  low: "快速草稿",
-  medium: "标准",
-  high: "高质量"
-};
-
-const formatLabels: Record<OutputFormat, string> = {
-  png: "PNG",
-  jpeg: "JPEG",
-  webp: "WebP"
-};
-
-const stylePresetLabels: Record<StylePresetId, string> = {
-  none: "无风格",
-  photoreal: "真实摄影",
-  product: "商业产品",
-  illustration: "精致插画",
-  poster: "海报视觉",
-  avatar: "头像角色"
-};
-
-const sizePresetLabels: Record<string, string> = {
-  "square-1k": "方形成图 1K",
-  "poster-portrait": "竖版海报",
-  "poster-landscape": "横版海报",
-  "story-9-16": "竖屏故事",
-  "video-16-9": "视频封面",
-  "wide-2k": "宽屏展示 2K",
-  "portrait-2k": "高清竖图 2K",
-  "square-2k": "高清方图 2K",
-  "wide-4k": "宽屏展示 4K"
-};
-
-const modeLabels: Record<GenerationRecord["mode"], string> = {
-  generate: "提示词到画布",
-  edit: "参考图到画布"
-};
-
-const statusLabels: Record<GenerationStatus, string> = {
-  pending: "等待中",
-  running: "生成中",
-  succeeded: "已完成",
-  partial: "部分完成",
-  failed: "失败",
-  cancelled: "已取消"
-};
+function missingReferenceSelection(t: Translate): ReferenceSelection {
+  return {
+    status: "none",
+    hint: t("generationReferenceNeed", { max: MAX_REFERENCE_IMAGES })
+  };
+}
 
 const historyStatusStyles: Record<GenerationStatus, string> = {
   pending: "history-status--pending",
@@ -305,30 +284,55 @@ const historyStatusStyles: Record<GenerationStatus, string> = {
   cancelled: "history-status--cancelled"
 };
 
-function sizePresetLabel(preset: SizePreset): string {
-  return sizePresetLabels[preset.id] ?? preset.label;
+function sizePresetLabel(preset: SizePreset, t: Translate): string {
+  return t("sizePresetLabel", { presetId: preset.id, fallback: preset.label });
 }
 
-function sizePresetOptionLabel(preset: SizePreset): string {
-  return `${sizePresetLabel(preset)} - ${preset.width} x ${preset.height}`;
+function sizePresetOptionLabel(preset: SizePreset, t: Translate): string {
+  return `${sizePresetLabel(preset, t)} - ${preset.width} x ${preset.height}`;
 }
 
 function normalizeDimension(value: string): number {
   return Number.parseInt(value, 10);
 }
 
-function sizeValidationMessage(width: number, height: number): string {
+function sizeValidationMessage(width: number, height: number, t: Translate, locale: Locale): string {
   const result = validateImageSize({ width, height });
 
   if (result.ok) {
     return "";
   }
 
-  return result.message;
+  return imageSizeValidationMessage(result.reason, t, locale);
 }
 
-function generationValidationMessage(promptValue: string, widthValue: number, heightValue: number): string {
-  return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词。";
+function generationValidationMessage(promptValue: string, widthValue: number, heightValue: number, t: Translate, locale: Locale): string {
+  return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue, t, locale) : t("promptRequired");
+}
+
+function imageSizeValidationMessage(reason: ImageSizeValidationReason | undefined, t: Translate, locale: Locale): string {
+  const numberFormat = new Intl.NumberFormat(locale);
+
+  switch (reason) {
+    case "non_integer":
+      return t("imageSizeNonInteger");
+    case "too_small":
+      return t("imageSizeTooSmall", { min: MIN_IMAGE_DIMENSION });
+    case "too_large":
+      return t("imageSizeTooLarge", { max: MAX_IMAGE_DIMENSION });
+    case "not_multiple":
+      return t("imageSizeNotMultiple", { multiple: IMAGE_SIZE_MULTIPLE });
+    case "aspect_ratio":
+      return t("imageSizeAspectRatio", { maxRatio: MAX_IMAGE_ASPECT_RATIO });
+    case "total_pixels_too_small":
+      return t("imageSizeTotalTooSmall", { minPixels: numberFormat.format(MIN_TOTAL_PIXELS) });
+    case "total_pixels_too_large":
+      return t("imageSizeTotalTooLarge", { maxPixels: numberFormat.format(MAX_TOTAL_PIXELS) });
+    case "unsupported_preset":
+      return t("imageSizeUnsupportedPreset");
+    default:
+      return t("imageSizeUnsupportedPreset");
+  }
 }
 
 function routeFromLocation(): AppRoute {
@@ -376,28 +380,31 @@ function failedOutputMessages(record: GenerationRecord): string[] {
   return messages;
 }
 
-function generationFailureMessage(record: GenerationRecord): string {
+function generationFailureMessage(record: GenerationRecord, t: Translate): string {
   const summary = record.error?.trim();
   const firstFailure = failedOutputMessages(record)[0];
 
   if (firstFailure) {
-    return summary && summary !== firstFailure ? `${summary} 失败原因：${firstFailure}` : firstFailure;
+    return summary && summary !== firstFailure ? t("generationFailureReason", { summary, reason: firstFailure }) : firstFailure;
   }
 
-  return summary || "没有可插入的成功图像。";
+  return summary || t("generationNoSuccessfulImage");
 }
 
-function generationWarningMessage(record: GenerationRecord, insertedCount: number, failedCount: number, cloudFailedCount: number): string {
-  const parts = [`已向画布插入 ${insertedCount} 张图像`];
+function generationWarningMessage(record: GenerationRecord, insertedCount: number, failedCount: number, cloudFailedCount: number, t: Translate): string {
+  const parts = [t("generationImageInsertedPart", { count: insertedCount })];
   if (failedCount > 0) {
-    parts.push(`${failedCount} 张生成失败`);
+    parts.push(t("generationFailedCount", { count: failedCount }));
   }
   if (cloudFailedCount > 0) {
-    parts.push(`本地已保存，${cloudFailedCount} 张云端上传失败`);
+    parts.push(t("generationCloudSavedButFailed", { count: cloudFailedCount }));
   }
 
   const firstFailure = failedOutputMessages(record)[0];
-  return firstFailure ? `${parts.join("，")}。失败原因：${firstFailure}` : `${parts.join("，")}。`;
+  const message = parts.join(t("commonListSeparator"));
+  return firstFailure
+    ? t("generationFailureReason", { summary: `${message}${t("commonSentenceEnd")}`, reason: firstFailure })
+    : `${message}${t("commonSentenceEnd")}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -553,30 +560,20 @@ async function writeClipboardText(text: string): Promise<void> {
   }
 }
 
-function formatCreatedTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+function formatCreatedTime(value: string, formatDateTime: (value: string) => string): string {
+  return formatDateTime(value);
 }
 
-function formatCodexExpiry(value: string): string {
+function formatCodexExpiry(value: string, formatDateTime: (value: string, options?: Intl.DateTimeFormatOptions) => string, t: Translate): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "15 分钟后";
+    return t("timeFallback15Minutes");
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return formatDateTime(value, {
     hour: "2-digit",
     minute: "2-digit"
-  }).format(date);
+  });
 }
 
 function createTldrawAssetId(assetId: string): TLAssetId {
@@ -732,7 +729,7 @@ function createImageShape(
   };
 }
 
-function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGenerationPlaceholders, record: GenerationRecord): number {
+function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGenerationPlaceholders, record: GenerationRecord, t: Translate): number {
   const assets: TLAsset[] = [];
   const imageShapes: Array<Partial<TLImageShape> & { id: TLShapeId; type: "image" }> = [];
   const replacedPlaceholderIds: TLShapeId[] = [];
@@ -756,7 +753,7 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
         type: GENERATION_PLACEHOLDER_TYPE,
         props: {
           status: "failed",
-          error: output?.error || record.error || "生成到画布失败。"
+          error: output?.error || record.error || t("generationErrorDefault")
         }
       });
     }
@@ -876,24 +873,24 @@ function firstLiveGenerationPlaceholder(editor: Editor, placeholderSet: ActiveGe
   return placeholderSet.placements.find((placement) => isGenerationPlaceholderShape(editor.getShape(placement.id)))?.id;
 }
 
-function resolveReferenceSelection(editor: Editor): ReferenceSelection {
+function resolveReferenceSelection(editor: Editor, t: Translate): ReferenceSelection {
   const selectedShapes = editor.getSelectedShapes();
 
   if (selectedShapes.length === 0) {
-    return missingReferenceSelection;
+    return missingReferenceSelection(t);
   }
 
   if (selectedShapes.some((shape) => shape.type !== "image")) {
     return {
       status: "non-image",
-      hint: `当前选择中包含非图片对象。请只圈选 1-${MAX_REFERENCE_IMAGES} 张图片作为参考。`
+      hint: t("generationSelectionNonImage", { max: MAX_REFERENCE_IMAGES })
     };
   }
 
   if (selectedShapes.length > MAX_REFERENCE_IMAGES) {
     return {
       status: "too-many",
-      hint: `当前选择了 ${selectedShapes.length} 张图片。参考图最多支持 ${MAX_REFERENCE_IMAGES} 张。`
+      hint: t("generationSelectionTooMany", { count: selectedShapes.length, max: MAX_REFERENCE_IMAGES })
     };
   }
 
@@ -906,14 +903,14 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
     if (!sourceUrl) {
       return {
         status: "unreadable",
-        hint: "选中的图片缺少可读取的数据源，无法作为参考图。"
+        hint: t("generationSelectionMissingSource")
       };
     }
 
     if (!isReadableReferenceSource(sourceUrl, asset)) {
       return {
         status: "unreadable",
-        hint: "选中的图片当前无法被浏览器读取，请只选择本地生成或已导入的 PNG、JPEG、WebP 图片。"
+        hint: t("generationSelectionUnreadable")
       };
     }
 
@@ -939,8 +936,8 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
     references: sortedReferences,
     hint:
       sortedReferences.length === 1
-        ? "已选中 1 张图片，将使用它作为本次参考图。"
-        : `已选中 ${sortedReferences.length} 张参考图，将按画布位置从上到下、从左到右发送。`
+        ? t("generationSelectedReferenceOne")
+        : t("generationSelectedReferenceMany", { count: sortedReferences.length })
   };
 }
 
@@ -1353,23 +1350,23 @@ function isSupportedReferenceImageType(mimeType: string): boolean {
   return SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType.toLowerCase());
 }
 
-async function blobToDataUrl(blob: Blob): Promise<string> {
+async function blobToDataUrl(blob: Blob, t?: Translate): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error("无法读取参考图片数据。"));
+    reader.onerror = () => reject(new Error(t ? t("readReferenceDataFailed") : "Unable to read reference image data."));
     reader.onload = () => {
       if (typeof reader.result === "string") {
         resolve(reader.result);
         return;
       }
 
-      reject(new Error("无法读取参考图片数据。"));
+      reject(new Error(t ? t("readReferenceDataFailed") : "Unable to read reference image data."));
     };
     reader.readAsDataURL(blob);
   });
 }
 
-async function readReferenceImage(selection: ReferenceSelectionItem, signal: AbortSignal): Promise<{
+async function readReferenceImage(selection: ReferenceSelectionItem, signal: AbortSignal, t: Translate): Promise<{
   dataUrl: string;
   fileName: string;
 }> {
@@ -1378,53 +1375,59 @@ async function readReferenceImage(selection: ReferenceSelectionItem, signal: Abo
   try {
     response = await fetch(selection.sourceUrl, { signal });
   } catch {
-    throw new Error("无法读取当前参考图。请确认图片来自本地生成结果或浏览器可访问的图片数据。");
+    throw new Error(t("readReferenceFailed"));
   }
 
   if (!response.ok) {
-    throw new Error("无法读取当前参考图。请确认图片文件仍然存在。");
+    throw new Error(t("readReferenceMissingFile"));
   }
 
   const blob = await response.blob();
   if (!isSupportedReferenceImageType(blob.type)) {
-    throw new Error("当前参考资源不是可用的图片格式。");
+    throw new Error(t("referenceInvalidType"));
   }
   if (blob.size > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error("参考图像不能超过 50MB。");
+    throw new Error(t("referenceFileTooLarge"));
   }
 
   return {
-    dataUrl: await blobToDataUrl(blob),
+    dataUrl: await blobToDataUrl(blob, t),
     fileName: fileNameWithImageExtension(selection.name, blob.type)
   };
 }
 
-async function readStoredReferenceImage(assetId: string, signal: AbortSignal): Promise<ReferenceImageInput> {
+async function readStoredReferenceImage(assetId: string, signal: AbortSignal, t: Translate): Promise<ReferenceImageInput> {
   const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`, { signal });
   if (!response.ok) {
-    throw new Error("无法读取历史参考图。请确认原始资源仍然存在。");
+    throw new Error(t("readStoredReferenceFailed"));
   }
 
   const blob = await response.blob();
   if (!isSupportedReferenceImageType(blob.type)) {
-    throw new Error("历史参考资源不是可用的图片格式。");
+    throw new Error(t("referenceHistoryInvalidType"));
   }
   if (blob.size > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error("历史参考图像不能超过 50MB。");
+    throw new Error(t("referenceHistoryFileTooLarge"));
   }
 
   return {
-    dataUrl: await blobToDataUrl(blob),
+    dataUrl: await blobToDataUrl(blob, t),
     fileName: fileNameWithImageExtension(assetId, blob.type)
   };
 }
 
-async function readErrorMessage(response: Response): Promise<string> {
+async function readErrorMessage(response: Response, locale: Locale, t: Translate): Promise<string> {
   try {
-    const body = (await response.json()) as { error?: { message?: string } };
-    return body.error?.message ? `${body.error.message}（HTTP ${response.status}）` : `生成请求失败，状态 ${response.status}。`;
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return localizedApiErrorMessage({
+      code: body.error?.code,
+      fallbackMessage: body.error?.message,
+      fallbackText: t("errorFallback", { status: response.status }),
+      locale,
+      status: response.status
+    });
   } catch {
-    return `生成请求失败，状态 ${response.status}。`;
+    return t("errorFallback", { status: response.status });
   }
 }
 
@@ -1469,36 +1472,34 @@ function requestGenerationNotificationPermission(): void {
   void Notification.requestPermission().catch(() => undefined);
 }
 
-function showGenerationCompleteNotification(record: GenerationRecord, insertedCount: number, failedCount: number): void {
+function showGenerationCompleteNotification(record: GenerationRecord, insertedCount: number, failedCount: number, t: Translate): void {
   if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "granted") {
     return;
   }
 
   const isPartial = record.status === "partial" || failedCount > 0;
-  const body = isPartial
-    ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-    : `已向画布插入 ${insertedCount} 张图像。`;
+  const body = isPartial ? t("generationInsertedPartialBody", { inserted: insertedCount, failed: failedCount }) : t("generationImageInserted", { count: insertedCount });
 
-  new Notification(isPartial ? "生成到画布部分完成" : "已生成到画布", {
+  new Notification(isPartial ? t("generationNotificationPartialTitle") : t("generationNotificationTitle"), {
     body,
     icon: "/favicon.svg",
     tag: `generation-${record.id}`
   });
 }
 
-function saveStatusLabel(status: SaveStatus): string {
+function saveStatusLabel(status: SaveStatus, t: Translate): string {
   switch (status) {
     case "loading":
-      return "正在载入";
+      return t("saveStatusLoading");
     case "pending":
-      return "待保存";
+      return t("saveStatusPending");
     case "saving":
-      return "保存中";
+      return t("saveStatusSaving");
     case "error":
-      return "保存失败";
+      return t("saveStatusError");
     case "saved":
     default:
-      return "已保存";
+      return t("saveStatusSaved");
   }
 }
 
@@ -1550,6 +1551,8 @@ function TopNavigation({
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <header className="top-navigation">
       <div className="top-navigation__inner">
@@ -1557,11 +1560,11 @@ function TopNavigation({
           <BrandMark />
           <div className="min-w-0">
             <BrandName />
-            <p className="brand-tagline">本地 AI 图像画布</p>
+            <p className="brand-tagline">{t("appTagline")}</p>
           </div>
         </div>
         <div className="top-navigation__actions">
-          <nav aria-label="主要页面" className="top-navigation__links">
+          <nav aria-label={t("navMainAria")} className="top-navigation__links">
             <a
               aria-current={route === "home" ? "page" : undefined}
               className="top-navigation__link"
@@ -1574,7 +1577,7 @@ function TopNavigation({
               }}
             >
               <Sparkles className="size-4" aria-hidden="true" />
-              首页
+              {t("navHome")}
             </a>
             <a
               aria-current={route === "canvas" ? "page" : undefined}
@@ -1588,7 +1591,7 @@ function TopNavigation({
               }}
             >
               <Square className="size-4" aria-hidden="true" />
-              画布
+              {t("navCanvas")}
             </a>
             <a
               aria-current={route === "gallery" ? "page" : undefined}
@@ -1604,23 +1607,45 @@ function TopNavigation({
               }}
             >
               <ImageIcon className="size-4" aria-hidden="true" />
-              Gallery
+              {t("navGallery")}
             </a>
           </nav>
+          <LanguageSwitcher />
           <button
-            aria-label="打开生成服务配置"
+            aria-label={t("navOpenProviderConfig")}
             className="top-navigation__settings"
             data-testid="global-provider-settings"
-            title="生成服务配置"
+            title={t("navProviderConfig")}
             type="button"
             onClick={onOpenProviderConfig}
           >
             <Settings className="size-4" aria-hidden="true" />
-            <span>配置</span>
+            <span>{t("navSettings")}</span>
           </button>
         </div>
       </div>
     </header>
+  );
+}
+
+function LanguageSwitcher() {
+  const { locale, setLocale, t } = useI18n();
+
+  return (
+    <div className="language-switcher" aria-label={t("languageAria")} role="group">
+      {LOCALES.map((item) => (
+        <button
+          aria-pressed={locale === item}
+          className="language-switcher__button"
+          data-active={locale === item}
+          key={item}
+          type="button"
+          onClick={() => setLocale(item)}
+        >
+          {item === "zh-CN" ? t("languageZh") : t("languageEn")}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1634,7 +1659,7 @@ function CanvasThemeSync({ onChange }: { onChange: (isDarkMode: boolean) => void
   return null;
 }
 
-function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean): {
+function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean, t: Translate): {
   copy: string;
   provider: "openai" | "codex" | "loading" | "none";
   title: string;
@@ -1642,22 +1667,22 @@ function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoad
   if (authStatus?.provider === "openai") {
     if (authStatus.activeSource?.id === "local-openai") {
       return {
-        copy: "当前使用应用内保存的 OpenAI 兼容配置。",
+        copy: t("providerStatusLocalCopy"),
         provider: "openai",
-        title: "本地 OpenAI"
+        title: t("providerStatusLocalTitle")
       };
     }
 
     if (authStatus.activeSource?.id === "env-openai") {
       return {
-        copy: "当前使用 .env 或运行时环境变量中的 OpenAI 兼容配置。",
+        copy: t("providerStatusEnvCopy"),
         provider: "openai",
-        title: "环境 OpenAI"
+        title: t("providerStatusEnvTitle")
       };
     }
 
     return {
-      copy: "当前使用 OpenAI 兼容 Images API。",
+      copy: t("providerStatusGenericOpenAICopy"),
       provider: "openai",
       title: "OpenAI API"
     };
@@ -1665,24 +1690,24 @@ function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoad
 
   if (authStatus?.provider === "codex") {
     return {
-      copy: authStatus.codex.email ?? authStatus.codex.accountId ?? "Codex 会话可用。",
+      copy: authStatus.codex.email ?? authStatus.codex.accountId ?? t("providerStatusCodexCopy"),
       provider: "codex",
-      title: "Codex 已登录"
+      title: t("providerStatusCodexTitle")
     };
   }
 
   if (isAuthLoading) {
     return {
-      copy: "正在检查本地凭据。",
+      copy: t("providerStatusLoadingCopy"),
       provider: "loading",
-      title: "检查登录状态"
+      title: t("providerStatusLoadingTitle")
     };
   }
 
   return {
-    copy: "打开右上角配置，可保存本地 API 或登录 Codex。",
+    copy: t("providerStatusNoneCopy"),
     provider: "none",
-    title: "需要生成服务"
+    title: t("providerStatusNoneTitle")
   };
 }
 
@@ -1701,13 +1726,14 @@ function ProviderStatusPopover({
   onLogoutCodex: () => void;
   onStartCodexLogin: () => void;
 }) {
-  const details = providerStatusDetails(authStatus, isAuthLoading);
+  const { t } = useI18n();
+  const details = providerStatusDetails(authStatus, isAuthLoading, t);
   const isCodexStarting = codexLoginStatus === "starting";
 
   return (
     <div className="provider-status-popover" data-provider={details.provider} data-testid="auth-provider-card">
       <button
-        aria-label={`图像服务：${details.title}`}
+        aria-label={t("providerStatusAria", { title: details.title })}
         className="provider-status-popover__trigger"
         type="button"
       >
@@ -1721,7 +1747,7 @@ function ProviderStatusPopover({
       </button>
 
       <div className="provider-status-popover__content">
-        <span className="control-label">图像服务</span>
+        <span className="control-label">{t("providerStatusImageService")}</span>
         <p className="provider-status-popover__title">{details.title}</p>
         <p className="provider-status-popover__copy">{details.copy}</p>
 
@@ -1735,13 +1761,13 @@ function ProviderStatusPopover({
           <button
             className="provider-status-popover__action"
             type="button"
-            title="退出 Codex"
+            title={t("providerLogoutCodex")}
             data-testid="codex-logout-button"
             disabled={isAuthLoading}
             onClick={onLogoutCodex}
           >
             <LogOut className="size-4" aria-hidden="true" />
-            退出 Codex
+            {t("providerLogoutCodex")}
           </button>
         ) : details.provider === "openai" ? null : (
           <button
@@ -1756,7 +1782,7 @@ function ProviderStatusPopover({
             ) : (
               <KeyRound className="size-4" aria-hidden="true" />
             )}
-            登录 Codex
+            {t("providerLoginCodex")}
           </button>
         )}
       </div>
@@ -1765,6 +1791,28 @@ function ProviderStatusPopover({
 }
 
 export function App() {
+  const { formatDateTime, locale, setLocale, t } = useI18n();
+  const tldrawLocale = tldrawLocaleForLocale(locale);
+  const tldrawUserPreferences = useMemo<TLUserPreferences>(
+    () => ({
+      id: TLDRAW_USER_ID,
+      locale: tldrawLocale
+    }),
+    [tldrawLocale]
+  );
+  const syncTldrawUserPreferences = useCallback(
+    (preferences: TLUserPreferences) => {
+      const nextLocale = localeForTldrawLocale(preferences.locale);
+      if (nextLocale && nextLocale !== locale) {
+        setLocale(nextLocale);
+      }
+    },
+    [locale, setLocale]
+  );
+  const tldrawUser = useTldrawUser({
+    userPreferences: tldrawUserPreferences,
+    setUserPreferences: syncTldrawUserPreferences
+  });
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
   const shouldAutoOpenCanvasRef = useRef(route !== "gallery");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
@@ -1804,7 +1852,7 @@ export function App() {
   const [storageMessage, setStorageMessage] = useState("");
   const [isStorageSaving, setIsStorageSaving] = useState(false);
   const [isStorageTesting, setIsStorageTesting] = useState(false);
-  const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(missingReferenceSelection);
+  const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(() => missingReferenceSelection(t));
   const [isCanvasDarkMode, setIsCanvasDarkMode] = useState(false);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -1819,8 +1867,8 @@ export function App() {
   const hasGenerationProvider = authStatus?.provider === "openai" || authStatus?.provider === "codex";
 
   const trimmedPrompt = prompt.trim();
-  const promptValidationMessage = prompt.trim() ? "" : "请输入提示词。";
-  const dimensionValidationMessage = sizeValidationMessage(width, height);
+  const promptValidationMessage = prompt.trim() ? "" : t("promptRequired");
+  const dimensionValidationMessage = sizeValidationMessage(width, height, t, locale);
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
   const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
@@ -1871,7 +1919,7 @@ export function App() {
     try {
       const response = await fetch("/api/auth/status", { signal });
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const status = (await response.json()) as AuthStatusResponse;
@@ -1882,20 +1930,20 @@ export function App() {
         return null;
       }
 
-      setAuthError(error instanceof Error ? error.message : "无法读取图像服务登录状态。");
+      setAuthError(error instanceof Error ? error.message : t("authStatusLoadFailed"));
       return null;
     } finally {
       if (!signal?.aborted) {
         setIsAuthLoading(false);
       }
     }
-  }, []);
+  }, [locale, t]);
 
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
       return {
         tone: "progress",
-        message: `当前 ${activeGenerationCount} 个任务正在生成到画布，可继续下发新任务。`,
+        message: t("generationActiveTasks", { count: activeGenerationCount }),
         testId: "generation-progress"
       };
     }
@@ -1940,6 +1988,7 @@ export function App() {
     generationWarning,
     isGenerating,
     shouldShowValidation,
+    t,
     validationMessage
   ]);
 
@@ -1993,7 +2042,7 @@ export function App() {
         }
 
         setSaveStatus("error");
-        setSaveError("无法载入已保存项目，将使用空白画布。");
+        setSaveError(t("projectLoadFailed"));
       } finally {
         if (!controller.signal.aborted) {
           setIsProjectLoaded(true);
@@ -2056,7 +2105,7 @@ export function App() {
         setStorageSecretTouched(false);
       } catch {
         if (!controller.signal.aborted) {
-          setStorageError("Unable to load cloud storage settings.");
+          setStorageError(t("storageLoadFailed"));
         }
       }
     }
@@ -2066,7 +2115,7 @@ export function App() {
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_DRAWER_MEDIA_QUERY);
@@ -2080,7 +2129,7 @@ export function App() {
     return () => {
       mediaQuery.removeEventListener("change", updateDrawerMode);
     };
-  }, []);
+  }, [t]);
 
   const closeAiPanel = useCallback((): void => {
     setIsAiPanelOpen(false);
@@ -2120,16 +2169,16 @@ export function App() {
         method: "POST"
       });
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const device = (await response.json()) as CodexDeviceStartResponse;
       setCodexDevice(device);
       setCodexLoginStatus("pending");
-      setCodexLoginMessage("等待浏览器授权完成。");
+      setCodexLoginMessage(t("codexPendingAuth"));
       scheduleCodexPoll(device, device.interval);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Codex 登录无法启动。";
+      const message = error instanceof Error ? error.message : t("codexLoginFailedToStart");
       setCodexLoginStatus("error");
       setCodexLoginMessage(message);
       setAuthError(message);
@@ -2150,13 +2199,13 @@ export function App() {
       });
 
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const result = (await response.json()) as CodexDevicePollResponse;
       if (result.status === "authorized") {
         setCodexLoginStatus("authorized");
-        setCodexLoginMessage("Codex 已登录。");
+        setCodexLoginMessage(t("codexLoginAuthorized"));
         if (result.auth) {
           setAuthStatus(result.auth);
         } else {
@@ -2176,10 +2225,10 @@ export function App() {
       }
 
       setCodexLoginStatus(result.status);
-      setCodexLoginMessage(result.message ?? "Codex 登录未完成，请重新开始。");
+      setCodexLoginMessage(result.message ?? t("codexLoginIncomplete"));
       void loadAuthStatus();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Codex 登录轮询失败。";
+      const message = error instanceof Error ? error.message : t("codexLoginPollingFailed");
       setCodexLoginStatus("error");
       setCodexLoginMessage(message);
       setAuthError(message);
@@ -2209,7 +2258,7 @@ export function App() {
         method: "POST"
       });
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const result = (await response.json()) as CodexLogoutResponse;
@@ -2218,7 +2267,7 @@ export function App() {
       setCodexLoginStatus("idle");
       setCodexLoginMessage("");
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Codex 登出失败。");
+      setAuthError(error instanceof Error ? error.message : t("codexLogoutFailed"));
     } finally {
       setIsAuthLoading(false);
     }
@@ -2261,7 +2310,7 @@ export function App() {
       });
 
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const result = (await response.json()) as StorageTestResult;
@@ -2272,7 +2321,7 @@ export function App() {
 
       setStorageMessage(result.message);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : "Cloud storage test failed.");
+      setStorageError(error instanceof Error ? error.message : t("storageTestFailed"));
     } finally {
       setIsStorageTesting(false);
     }
@@ -2297,18 +2346,18 @@ export function App() {
       });
 
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const config = (await response.json()) as StorageConfigResponse;
       setStorageConfig(config);
       setStorageForm(storageConfigToForm(config));
       setStorageSecretTouched(false);
-      setStorageMessage("Cloud storage settings saved.");
-      setGenerationMessage(config.enabled ? "Cloud storage is enabled." : "Cloud storage is disabled.");
+      setStorageMessage(t("storageSaved"));
+      setGenerationMessage(config.enabled ? t("storageEnabledMessage") : t("storageDisabledMessage"));
       setGenerationWarning("");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : "Cloud storage settings could not be saved.");
+      setStorageError(error instanceof Error ? error.message : t("storageSaveFailed"));
     } finally {
       setIsStorageSaving(false);
     }
@@ -2352,7 +2401,7 @@ export function App() {
 
     const editor = editorRef.current;
     if (generationMode === "reference" && editor) {
-      const nextSelection = resolveReferenceSelection(editor);
+      const nextSelection = resolveReferenceSelection(editor, t);
       setReferenceSelection((currentSelection) =>
         areReferenceSelectionsEqual(currentSelection, nextSelection) ? currentSelection : nextSelection
       );
@@ -2360,9 +2409,9 @@ export function App() {
     }
 
     setReferenceSelection((currentSelection) =>
-      areReferenceSelectionsEqual(currentSelection, missingReferenceSelection) ? currentSelection : missingReferenceSelection
+      areReferenceSelectionsEqual(currentSelection, missingReferenceSelection(t)) ? currentSelection : missingReferenceSelection(t)
     );
-  }, [generationMode]);
+  }, [generationMode, t]);
 
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
@@ -2376,7 +2425,7 @@ export function App() {
         return;
       }
 
-      const nextSelection = resolveReferenceSelection(editor);
+      const nextSelection = resolveReferenceSelection(editor, t);
       setReferenceSelection((currentSelection) =>
         areReferenceSelectionsEqual(currentSelection, nextSelection) ? currentSelection : nextSelection
       );
@@ -2419,7 +2468,7 @@ export function App() {
       } catch {
         if (saveRequestRef.current === requestId) {
           setSaveStatus("error");
-          setSaveError("自动保存失败，当前画布已保留，请稍后继续编辑。");
+          setSaveError(t("autosaveFailed"));
         }
       }
     }
@@ -2457,7 +2506,7 @@ export function App() {
       removeReferenceStoreListener();
       removeListener();
     };
-  }, []);
+  }, [t]);
 
   function selectScenePreset(nextPresetId: string): void {
     if (nextPresetId === CUSTOM_SIZE_PRESET_ID) {
@@ -2502,7 +2551,7 @@ export function App() {
     setGenerationMessage("");
     setGenerationWarning("");
 
-    const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height);
+    const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height, t, locale);
     if (inputValidationMessage) {
       setGenerationWarning(inputValidationMessage);
       return;
@@ -2510,7 +2559,7 @@ export function App() {
 
     const editor = editorRef.current;
     if (!editor) {
-      setGenerationError("画布未就绪。");
+      setGenerationError(t("generationCanvasNotReady"));
       return;
     }
 
@@ -2541,7 +2590,7 @@ export function App() {
     try {
       const referenceForRequest = requestMode === "reference" ? await resolveReference?.(controller.signal) : undefined;
       if (requestMode === "reference" && (!referenceForRequest || referenceForRequest.referenceImages.length === 0)) {
-        throw new Error(`请先选择 1-${MAX_REFERENCE_IMAGES} 张可用的参考图像。`);
+        throw new Error(t("generationRequireReference", { max: MAX_REFERENCE_IMAGES }));
       }
 
       const requestBody: Record<string, unknown> = {
@@ -2571,12 +2620,12 @@ export function App() {
       });
 
       if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+        throw new Error(await readErrorMessage(response, locale, t));
       }
 
       const body = (await response.json()) as unknown;
       if (!isGenerationResponse(body)) {
-        throw new Error("生成服务返回了无法识别的结果。");
+        throw new Error(t("generationInvalidResponse"));
       }
 
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
@@ -2591,27 +2640,27 @@ export function App() {
       setGenerationHistory((history) =>
         [body.record, ...history.filter((record) => record.id !== temporaryRecord.id && record.id !== body.record.id)].slice(0, 20)
       );
-      const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, body.record);
+      const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, body.record, t);
       const failedCount =
         body.record.outputs.filter((output) => output.status === "failed").length +
         Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
       const cloudFailedCount = cloudFailureCount(body.record);
       if (insertedCount > 0) {
         if (cloudFailedCount > 0 || failedCount > 0) {
-          setGenerationWarning(generationWarningMessage(body.record, insertedCount, failedCount, cloudFailedCount));
+          setGenerationWarning(generationWarningMessage(body.record, insertedCount, failedCount, cloudFailedCount, t));
         } else {
-          setGenerationMessage(`已向画布插入 ${insertedCount} 张图像。`);
+          setGenerationMessage(t("generationImageInserted", { count: insertedCount }));
         }
-        showGenerationCompleteNotification(body.record, insertedCount, failedCount);
+        showGenerationCompleteNotification(body.record, insertedCount, failedCount, t);
       } else {
-        setGenerationError(generationFailureMessage(body.record));
+        setGenerationError(generationFailureMessage(body.record, t));
       }
     } catch (error) {
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
 
-      const message = error instanceof Error ? error.message : "生成失败，请重试。";
+      const message = error instanceof Error ? error.message : t("generationErrorDefault");
       markGenerationPlaceholdersFailed(editor, placeholderSet, message);
       setGenerationHistory((history) =>
         history.map((record) => (record.id === temporaryRecord.id ? { ...record, status: "failed", error: message } : record))
@@ -2647,7 +2696,7 @@ export function App() {
         const referenceAssetIds = referenceAssetIdsForSelection(referenceSelection);
 
         return {
-          referenceImages: await Promise.all(referenceSelection.references.map((reference) => readReferenceImage(reference, signal))),
+          referenceImages: await Promise.all(referenceSelection.references.map((reference) => readReferenceImage(reference, signal, t))),
           referenceAssetIds
         };
       }, referenceSelection.status === "ready"
@@ -2661,7 +2710,7 @@ export function App() {
 
   function cancelReferenceSelection(): void {
     editorRef.current?.selectNone();
-    setReferenceSelection(missingReferenceSelection);
+    setReferenceSelection(missingReferenceSelection(t));
     setGenerationError("");
     setGenerationMessage("");
     setGenerationWarning("");
@@ -2674,7 +2723,7 @@ export function App() {
 
     const editor = editorRef.current;
     if (!editor) {
-      setGenerationError("画布未就绪。");
+      setGenerationError(t("generationCanvasNotReady"));
       return;
     }
 
@@ -2683,7 +2732,7 @@ export function App() {
       const activeTask = Array.from(activeGenerationsRef.current.values()).find((task) => task.temporaryRecordId === record.id);
       const placeholderId = activeTask ? firstLiveGenerationPlaceholder(editor, activeTask.placeholderSet) : undefined;
       if (!placeholderId) {
-        setGenerationError("画布上找不到这张历史图片，可能已被删除。");
+        setGenerationError(t("generationHistoryImageMissing"));
         return;
       }
 
@@ -2697,7 +2746,7 @@ export function App() {
       } else {
         editor.zoomToSelection({ animation: { duration: 220 } });
       }
-      setGenerationMessage("已定位到生成中的任务。");
+      setGenerationMessage(t("generationLocatePending"));
       return;
     }
 
@@ -2711,7 +2760,7 @@ export function App() {
     } else {
       editor.zoomToSelection({ animation: { duration: 220 } });
     }
-    setGenerationMessage("已定位到历史图像。");
+    setGenerationMessage(t("generationLocateSucceeded"));
   }
 
   async function rerunHistoryRecord(record: GenerationRecord): Promise<void> {
@@ -2745,7 +2794,7 @@ export function App() {
       nextGenerationMode,
       referenceAssetIds.length > 0
         ? async (signal) => ({
-            referenceImages: await Promise.all(referenceAssetIds.map((referenceAssetId) => readStoredReferenceImage(referenceAssetId, signal))),
+            referenceImages: await Promise.all(referenceAssetIds.map((referenceAssetId) => readStoredReferenceImage(referenceAssetId, signal, t))),
             referenceAssetIds
           })
         : undefined,
@@ -2757,12 +2806,12 @@ export function App() {
     const asset = firstDownloadableAsset(record);
     setGenerationWarning("");
     if (!asset) {
-      setGenerationError("这条历史记录没有可下载的本地资源。");
+      setGenerationError(t("generationDownloadNoAsset"));
       return;
     }
 
     window.open(`/api/assets/${encodeURIComponent(asset.id)}/download`, "_blank", "noopener,noreferrer");
-    setGenerationMessage("已打开原始资源下载。");
+    setGenerationMessage(t("generationDownloadOpened"));
   }
 
   function reuseGalleryImage(item: GalleryImageItem): void {
@@ -2780,7 +2829,7 @@ export function App() {
     setGenerationMode("text");
     setGenerationError("");
     setGenerationWarning("");
-    setGenerationMessage("已从 Gallery 填入生成参数。");
+    setGenerationMessage(t("generationGalleryReused"));
     navigateToRoute("canvas");
     if (isMobileDrawer) {
       setIsAiPanelOpen(true);
@@ -2814,15 +2863,15 @@ export function App() {
     setGenerationWarning("");
 
     if (!promptText) {
-      setGenerationError("这条历史记录没有可复制的提示词。");
+      setGenerationError(t("generationMissingPromptHistory"));
       return;
     }
 
     try {
       await writeClipboardText(promptText);
-      setGenerationMessage("已复制提示词。");
+      setGenerationMessage(t("generationCopiedPrompt"));
     } catch {
-      setGenerationError("复制失败，请手动复制提示词。");
+      setGenerationError(t("generationCopyFailed"));
     }
   }
 
@@ -2842,11 +2891,11 @@ export function App() {
     setActiveGenerationCount(activeGenerationsRef.current.size);
     setGenerationHistory((history) =>
       history.map((record) =>
-        record.id === task.temporaryRecordId ? { ...record, status: "cancelled", error: "已取消本次生成。" } : record
+        record.id === task.temporaryRecordId ? { ...record, status: "cancelled", error: t("generationUnknownCancel") } : record
       )
     );
     setGenerationError("");
-    setGenerationMessage("已取消本次生成。");
+    setGenerationMessage(t("generationUnknownCancel"));
     setGenerationWarning("");
   }
 
@@ -2872,7 +2921,7 @@ export function App() {
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
-        aria-label="gpt-image-canvas 创作画布"
+        aria-label={t("appCanvasAria")}
         data-testid="canvas-shell"
         ref={canvasShellRef}
         tabIndex={-1}
@@ -2885,14 +2934,15 @@ export function App() {
             options={tldrawOptions}
             snapshot={projectSnapshot}
             shapeUtils={shapeUtils}
+            user={tldrawUser}
             onMount={handleEditorMount}
           />
         ) : (
           <div className="canvas-loading-state">
             <BrandMark className="brand-mark--large" />
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-neutral-800">正在载入 gpt-image-canvas</p>
-              <p className="mt-1 text-xs text-neutral-500">本地 AI 图像画布</p>
+              <p className="text-sm font-semibold text-neutral-800">{t("canvasLoadingTitle")}</p>
+              <p className="mt-1 text-xs text-neutral-500">{t("appTagline")}</p>
             </div>
           </div>
         )}
@@ -2900,7 +2950,7 @@ export function App() {
 
       {isMobileDrawer && isAiPanelOpen ? (
         <button
-          aria-label="关闭生成到画布面板"
+          aria-label={t("generationPanelClose")}
           className="ai-panel-backdrop"
           data-testid="ai-panel-backdrop"
           type="button"
@@ -2919,12 +2969,12 @@ export function App() {
         onClick={() => setIsAiPanelOpen(true)}
       >
         <Sparkles className="size-4" aria-hidden="true" />
-        生成到画布
+        {t("generationStartText")}
       </button>
 
       <aside
         aria-hidden={isMobileDrawer && !isAiPanelOpen ? true : undefined}
-        aria-label="AI 生成面板"
+        aria-label={t("generationPanelAria")}
         aria-modal={isMobileDrawer && isAiPanelOpen ? true : undefined}
         className="ai-panel fixed inset-y-0 right-0 z-20 flex flex-col border-l border-neutral-200 bg-white shadow-2xl shadow-neutral-950/15"
         data-drawer-state={isAiPanelOpen ? "open" : "closed"}
@@ -2939,7 +2989,7 @@ export function App() {
               <BrandMark />
               <div className="min-w-0">
                 <BrandName />
-                <p className="brand-tagline">本地 AI 图像画布</p>
+                <p className="brand-tagline">{t("appTagline")}</p>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -2952,14 +3002,14 @@ export function App() {
                 onStartCodexLogin={startCodexLogin}
               />
               <button
-                aria-label="云存储设置"
+                aria-label={t("storageSettings")}
                 className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
                   storageConfig?.enabled
                     ? "border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100"
                     : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900"
                 }`}
                 data-testid="storage-settings-button"
-                title={storageConfig?.enabled ? "云存储已开启" : "云存储设置"}
+                title={storageConfig?.enabled ? t("storageEnabledTitle") : t("storageSettings")}
                 type="button"
                 onClick={openStorageDialog}
               >
@@ -2973,10 +3023,10 @@ export function App() {
                 role="status"
               >
                 <SaveStatusIcon status={saveStatus} />
-                {saveStatusLabel(saveStatus)}
+                {saveStatusLabel(saveStatus, t)}
               </div>
               <button
-                aria-label="关闭生成到画布面板"
+                aria-label={t("generationPanelClose")}
                 className="ai-panel-close"
                 ref={panelCloseButtonRef}
                 type="button"
@@ -2996,8 +3046,8 @@ export function App() {
           ) : null}
 
           <div data-testid="generation-mode-control">
-            <span className="control-label">模式</span>
-            <div className="mt-2 grid grid-cols-2 gap-2" role="group" aria-label="模式">
+            <span className="control-label">{t("generationModeLabel")}</span>
+            <div className="mt-2 grid grid-cols-2 gap-2" role="group" aria-label={t("generationModeAria")}>
               <button
                 className={generationMode === "text" ? "segmented-control h-9 text-xs is-active" : "segmented-control h-9 text-xs"}
                 type="button"
@@ -3005,7 +3055,7 @@ export function App() {
                 data-testid="mode-text"
                 onClick={() => setGenerationMode("text")}
               >
-                提示词到画布
+                {t("modeLabel", { mode: "generate" })}
               </button>
               <button
                 className={
@@ -3016,19 +3066,19 @@ export function App() {
                 data-testid="mode-reference"
                 onClick={() => setGenerationMode("reference")}
               >
-                参考图到画布
+                {t("modeLabel", { mode: "edit" })}
               </button>
             </div>
           </div>
 
           <label className="block">
-            <span className="control-label">提示词</span>
+            <span className="control-label">{t("generationPromptLabel")}</span>
             <textarea
               aria-invalid={Boolean(promptValidationMessage)}
               className="prompt-textarea mt-2 h-32 w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm leading-6 text-neutral-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               id="prompt-input"
               name="prompt"
-              placeholder="描述画面主体、场景、光线、构图和关键细节"
+              placeholder={t("generationPromptPlaceholder")}
               value={prompt}
               data-testid="prompt-input"
               onChange={(event) => setPrompt(event.target.value)}
@@ -3040,13 +3090,13 @@ export function App() {
               {promptStarters.map((starter) => (
                 <button
                   className="prompt-chip"
-                  key={starter.label}
+                  key={starter.labelKey}
                   type="button"
-                  title={starter.prompt}
+                  title={t(starter.promptKey)}
                   data-testid="prompt-starter-chip"
-                  onClick={() => applyPromptStarter(starter.prompt)}
+                  onClick={() => applyPromptStarter(t(starter.promptKey))}
                 >
-                  {starter.label}
+                  {t(starter.labelKey)}
                 </button>
               ))}
             </div>
@@ -3065,8 +3115,8 @@ export function App() {
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">
                     {referenceSelection.status === "ready"
-                      ? `${referenceSelection.references.length} 张参考图到画布已就绪`
-                      : `请选择 1-${MAX_REFERENCE_IMAGES} 张参考图`}
+                      ? t("generationReferenceReady", { count: referenceSelection.references.length })
+                      : t("generationReferenceNeed", { max: MAX_REFERENCE_IMAGES })}
                   </p>
                   <p className="mt-1 text-xs leading-5" data-testid="reference-hint">
                     {referenceSelection.hint}
@@ -3077,7 +3127,7 @@ export function App() {
                         <div className="reference-preview-card" key={`${reference.sourceUrl}-${index}`}>
                           <span className="reference-preview-card__index">{index + 1}</span>
                           <img
-                            alt={`参考图 ${index + 1}：${reference.name}`}
+                            alt={t("generationReferenceAlt", { index: index + 1, name: reference.name })}
                             className="reference-preview-card__image"
                             src={reference.sourceUrl}
                           />
@@ -3094,7 +3144,7 @@ export function App() {
                         onClick={cancelReferenceSelection}
                       >
                         <X className="size-3.5" aria-hidden="true" />
-                        取消参考
+                        {t("generationCancelReference")}
                       </button>
                     </div>
                   ) : null}
@@ -3104,7 +3154,7 @@ export function App() {
           ) : null}
 
           <label className="block">
-            <span className="control-label">风格</span>
+            <span className="control-label">{t("generationStyleLabel")}</span>
             <select
               className="field-control"
               id="style-preset"
@@ -3115,14 +3165,14 @@ export function App() {
             >
               {STYLE_PRESETS.map((preset) => (
                 <option key={preset.id} value={preset.id}>
-                  {stylePresetLabels[preset.id]}
+                  {t("stylePresetLabel", { presetId: preset.id, fallback: preset.label })}
                 </option>
               ))}
             </select>
           </label>
 
           <div>
-            <span className="control-label">尺寸</span>
+            <span className="control-label">{t("generationSizeLabel")}</span>
             <div className="quick-size-grid" data-testid="quick-size-presets">
               {quickSizePresets.map((preset) => (
                 <button
@@ -3132,7 +3182,7 @@ export function App() {
                   type="button"
                   onClick={() => selectScenePreset(preset.id)}
                 >
-                  <span>{sizePresetLabel(preset)}</span>
+                  <span>{sizePresetLabel(preset, t)}</span>
                   <small>
                     {preset.width} x {preset.height}
                   </small>
@@ -3144,12 +3194,12 @@ export function App() {
                 type="button"
                 onClick={() => selectScenePreset(CUSTOM_SIZE_PRESET_ID)}
               >
-                <span>自定义</span>
-                <small>手动输入</small>
+                <span>{t("customSize")}</span>
+                <small>{t("customSizeManual")}</small>
               </button>
             </div>
             <label className="mt-3 block">
-              <span className="sr-only">全部尺寸</span>
+              <span className="sr-only">{t("generationAllSizes")}</span>
               <select
                 className="field-control"
                 id="scene-preset"
@@ -3160,17 +3210,17 @@ export function App() {
               >
                 {SIZE_PRESETS.map((preset) => (
                   <option key={preset.id} value={preset.id}>
-                    {sizePresetOptionLabel(preset)}
+                    {sizePresetOptionLabel(preset, t)}
                   </option>
                 ))}
-                <option value={CUSTOM_SIZE_PRESET_ID}>自定义尺寸</option>
+                <option value={CUSTOM_SIZE_PRESET_ID}>{t("customSizeOption")}</option>
               </select>
             </label>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <label>
-              <span className="control-label">宽度</span>
+              <span className="control-label">{t("generationWidthLabel")}</span>
               <input
                 className="field-control"
                 id="custom-width"
@@ -3185,7 +3235,7 @@ export function App() {
               />
             </label>
             <label>
-              <span className="control-label">高度</span>
+              <span className="control-label">{t("generationHeightLabel")}</span>
               <input
                 className="field-control"
                 id="custom-height"
@@ -3202,7 +3252,7 @@ export function App() {
           </div>
 
           <div>
-            <span className="control-label">数量</span>
+            <span className="control-label">{t("generationCountLabel")}</span>
             <div className="mt-2 grid grid-cols-3 gap-2">
               {PRIMARY_GENERATION_COUNTS.map((item) => (
                 <button
@@ -3218,7 +3268,7 @@ export function App() {
 
             <details className="group mt-2 rounded-md border border-neutral-200 bg-neutral-50">
               <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-neutral-800">
-                <span>{isExtendedCountSelected ? `更多数量：${count} 张` : "更多数量"}</span>
+                <span>{isExtendedCountSelected ? t("generationMoreCountSelected", { count }) : t("generationMoreCount")}</span>
                 <ChevronDown className="size-4 shrink-0 text-neutral-500 transition group-open:rotate-180" aria-hidden="true" />
               </summary>
               <div className="grid grid-cols-2 gap-2 border-t border-neutral-200 px-3 py-3">
@@ -3238,12 +3288,12 @@ export function App() {
 
           <details className="rounded-md border border-neutral-200 bg-neutral-50">
             <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-neutral-800">
-              高级设置
+              {t("generationAdvanced")}
               <ChevronDown className="size-4 text-neutral-500" aria-hidden="true" />
             </summary>
             <div className="space-y-4 border-t border-neutral-200 px-3 py-4">
               <label className="block">
-                <span className="control-label">质量</span>
+                <span className="control-label">{t("generationQualityLabel")}</span>
                 <select
                   className="field-control"
                   id="quality-select"
@@ -3254,14 +3304,14 @@ export function App() {
                 >
                   {IMAGE_QUALITIES.map((item) => (
                     <option key={item} value={item}>
-                      {qualityLabels[item]}
+                      {t("qualityLabel", { quality: item })}
                     </option>
                   ))}
                 </select>
               </label>
 
               <label className="block">
-                <span className="control-label">输出格式</span>
+                <span className="control-label">{t("generationOutputFormatLabel")}</span>
                 <select
                   className="field-control"
                   id="format-select"
@@ -3272,7 +3322,7 @@ export function App() {
                 >
                   {OUTPUT_FORMATS.map((item) => (
                     <option key={item} value={item}>
-                      {formatLabels[item]}
+                      {t("outputFormatLabel", { format: item })}
                     </option>
                   ))}
                 </select>
@@ -3282,9 +3332,9 @@ export function App() {
 
           <section className="space-y-3" data-history-expanded={isHistoryExpanded} data-testid="generation-history">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-neutral-950">生成历史</h2>
+              <h2 className="text-sm font-semibold text-neutral-950">{t("generationHistoryTitle")}</h2>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-neutral-500">{generationHistory.length} 条</span>
+                <span className="text-xs text-neutral-500">{t("generationHistoryCount", { count: generationHistory.length })}</span>
                 {hasAdditionalHistory ? (
                   <button
                     aria-expanded={isHistoryExpanded}
@@ -3293,7 +3343,7 @@ export function App() {
                     type="button"
                     onClick={() => setIsHistoryExpanded((expanded) => !expanded)}
                   >
-                    {isHistoryExpanded ? "收起" : `展开 ${hiddenHistoryCount} 条`}
+                    {isHistoryExpanded ? t("galleryToggleCollapse") : t("generationHistoryExpand", { count: hiddenHistoryCount })}
                     <ChevronDown className={`size-3.5 transition ${isHistoryExpanded ? "rotate-180" : ""}`} aria-hidden="true" />
                   </button>
                 ) : null}
@@ -3302,7 +3352,7 @@ export function App() {
 
             {generationHistory.length === 0 ? (
               <p className="rounded-md border border-dashed border-neutral-300 px-3 py-4 text-sm text-neutral-500">
-                暂无记录。
+                {t("generationEmptyHistory")}
               </p>
             ) : (
               <div className="history-list">
@@ -3324,36 +3374,36 @@ export function App() {
                       <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-2">
                           <span className={`history-status-pill ${historyStatusStyles[record.status]}`}>
-                            {statusLabels[record.status]}
+                            {t("statusLabel", { status: record.status })}
                           </span>
-                          <span className="truncate text-xs text-neutral-500">{modeLabels[record.mode]}</span>
+                          <span className="truncate text-xs text-neutral-500">{t("modeLabel", { mode: record.mode })}</span>
                         </div>
                         <p className="mt-1 truncate text-sm font-medium leading-5 text-neutral-950" title={record.prompt}>
                           {excerpt}
                         </p>
                         <dl className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs leading-5 text-neutral-500">
                           <div className="inline-flex items-center gap-1">
-                            <dt className="sr-only">尺寸</dt>
+                            <dt className="sr-only">{t("generationHistorySize")}</dt>
                             <dd>
                               {record.size.width} x {record.size.height}
                             </dd>
                           </div>
                           <div className="inline-flex items-center gap-1">
-                            <dt className="sr-only">输出数量</dt>
+                            <dt className="sr-only">{t("generationHistoryOutputCount")}</dt>
                             <dd>
-                              {successfulOutputCount(record)} / {totalOutputs} 张
+                              {t("generationImageOutputCount", { successful: successfulOutputCount(record), total: totalOutputs })}
                             </dd>
                           </div>
                           <div className="inline-flex items-center gap-1">
-                            <dt className="sr-only">创建时间</dt>
-                            <dd>{formatCreatedTime(record.createdAt)}</dd>
+                            <dt className="sr-only">{t("generationHistoryCreatedAt")}</dt>
+                            <dd>{formatCreatedTime(record.createdAt, formatDateTime)}</dd>
                           </div>
                           {cloudFailedCount > 0 ? (
                             <div className="inline-flex items-center gap-1 text-amber-700" title={cloudFailureMessage}>
-                              <dt className="sr-only">云端备份</dt>
+                              <dt className="sr-only">{t("generationHistoryCloudBackup")}</dt>
                               <dd className="inline-flex items-center gap-1">
                                 <Cloud className="size-3" aria-hidden="true" />
-                                云端失败 {cloudFailedCount}
+                                {t("generationCloudFailed", { count: cloudFailedCount })}
                               </dd>
                             </div>
                           ) : null}
@@ -3362,55 +3412,55 @@ export function App() {
 
                       <div className="history-actions">
                         <button
-                          aria-label={`复制历史提示词：${excerpt}`}
+                          aria-label={t("generationHistoryCopyPrompt", { excerpt })}
                           className="history-icon-action"
                           type="button"
                           data-testid="history-copy-prompt"
-                          title="复制提示词"
+                          title={t("galleryPromptLabel")}
                           onClick={() => void copyHistoryPrompt(record)}
                         >
                           <Copy className="size-4" aria-hidden="true" />
                         </button>
                         <button
-                          aria-label={`定位历史记录：${excerpt}`}
+                          aria-label={t("generationHistoryLocate", { excerpt })}
                           className="history-icon-action"
                           type="button"
                           data-testid="history-locate"
-                          title="定位"
+                          title={t("historyLocate")}
                           onClick={() => locateHistoryRecord(record)}
                         >
                           <MapPin className="size-4" aria-hidden="true" />
                         </button>
                         <button
-                          aria-label={`重跑历史记录：${excerpt}`}
+                          aria-label={t("generationHistoryRerun", { excerpt })}
                           className="history-icon-action"
                           type="button"
                           data-testid="history-rerun"
                           disabled={isRecordRunning}
-                          title={isRecordRunning ? "任务运行中" : "重跑"}
+                          title={isRecordRunning ? t("generationRerunRunning") : t("historyRerun")}
                           onClick={() => void rerunHistoryRecord(record)}
                         >
                           <RotateCcw className="size-4" aria-hidden="true" />
                         </button>
                         {activeTask && record.status === "running" ? (
                           <button
-                            aria-label={`取消生成任务：${excerpt}`}
+                            aria-label={t("historyCancelTask", { excerpt })}
                             className="history-icon-action"
                             type="button"
                             data-testid="history-cancel"
-                            title="取消"
+                            title={t("commonCancel")}
                             onClick={() => cancelGeneration(activeTask.requestId)}
                           >
                             <XCircle className="size-4" aria-hidden="true" />
                           </button>
                         ) : (
                           <button
-                            aria-label={`下载历史记录：${excerpt}`}
+                            aria-label={t("generationHistoryDownload", { excerpt })}
                             className="history-icon-action"
                             type="button"
                             data-testid="history-download"
                             disabled={!downloadableAsset}
-                            title={downloadableAsset ? "下载" : "没有可下载的本地资源"}
+                            title={downloadableAsset ? t("commonDownload") : t("generationHistoryNoDownload")}
                             onClick={() => downloadHistoryRecord(record)}
                           >
                             <Download className="size-4" aria-hidden="true" />
@@ -3451,7 +3501,7 @@ export function App() {
             ) : (
               <Square className="size-4" aria-hidden="true" />
             )}
-            {generationMode === "reference" ? "参考图生成到画布" : "生成到画布"}
+            {generationMode === "reference" ? t("generationStartReference") : t("generationStartText")}
           </button>
         </div>
       </aside>
@@ -3467,12 +3517,12 @@ export function App() {
             <div className="flex items-start justify-between gap-3 border-b border-neutral-200 px-5 py-4">
               <div className="min-w-0">
                 <h2 className="text-base font-semibold text-neutral-950" id="storage-dialog-title">
-                  云存储设置
+                  {t("storageSettings")}
                 </h2>
-                <p className="mt-1 text-xs leading-5 text-neutral-500">腾讯云 COS，生成图本地保存后同步上传。</p>
+                <p className="mt-1 text-xs leading-5 text-neutral-500">{t("storageSubtitle")}</p>
               </div>
               <button
-                aria-label="关闭云存储设置"
+                aria-label={t("storageClose")}
                 className="history-icon-action"
                 type="button"
                 onClick={closeStorageDialog}
@@ -3495,8 +3545,8 @@ export function App() {
 
               <label className="flex items-center justify-between gap-3 rounded-md border border-neutral-200 px-3 py-3">
                 <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-neutral-900">启用 COS 双写</span>
-                  <span className="mt-0.5 block text-xs leading-5 text-neutral-500">关闭后新图只写本地，已有云端对象保留。</span>
+                  <span className="block text-sm font-semibold text-neutral-900">{t("storageEnabledLabel")}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-neutral-500">{t("storageEnabledCopy")}</span>
                 </span>
                 <input
                   checked={storageForm.enabled}
@@ -3581,7 +3631,7 @@ export function App() {
                 onClick={() => void testStorageSettings()}
               >
                 {isStorageTesting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Cloud className="size-4" aria-hidden="true" />}
-                测试
+                {t("storageTest")}
               </button>
               <button
                 className="primary-action h-10"
@@ -3591,7 +3641,7 @@ export function App() {
                 onClick={() => void saveStorageSettings()}
               >
                 {isStorageSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="size-4" aria-hidden="true" />}
-                保存
+                {t("storageSave")}
               </button>
             </div>
           </div>
@@ -3609,11 +3659,11 @@ export function App() {
           >
             <div className="codex-login-dialog__header">
               <div className="min-w-0">
-                <h2 id="codex-login-title">登录 Codex</h2>
-                <p>使用 Codex 账号授权本地生成服务。</p>
+                <h2 id="codex-login-title">{t("codexLoginTitle")}</h2>
+                <p>{t("codexLoginSubtitle")}</p>
               </div>
               <button
-                aria-label="关闭 Codex 登录"
+                aria-label={t("codexCloseLogin")}
                 className="history-icon-action"
                 type="button"
                 onClick={closeCodexLoginDialog}
@@ -3626,7 +3676,7 @@ export function App() {
               {codexLoginStatus === "starting" ? (
                 <div className="codex-login-dialog__status" role="status">
                   <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                  正在创建登录码...
+                  {t("codexCreatingCode")}
                 </div>
               ) : null}
 
@@ -3638,15 +3688,15 @@ export function App() {
                   <div className="codex-login-dialog__actions">
                     <a className="primary-action h-10" href={codexDevice.verificationUrl} target="_blank" rel="noreferrer">
                       <ExternalLink className="size-4" aria-hidden="true" />
-                      打开登录页
+                      {t("codexOpenLoginPage")}
                     </a>
                     <button className="secondary-action h-10" type="button" onClick={() => void copyCodexUserCode()}>
                       <Copy className="size-4" aria-hidden="true" />
-                      复制代码
+                      {t("codexCopyCode")}
                     </button>
                   </div>
                   <p className="codex-login-dialog__hint">
-                    代码将在 {formatCodexExpiry(codexDevice.expiresAt)} 过期。
+                    {t("codexCodeExpires", { time: formatCodexExpiry(codexDevice.expiresAt, formatDateTime, t) })}
                   </p>
                 </>
               ) : null}
@@ -3665,7 +3715,7 @@ export function App() {
               {codexLoginStatus === "expired" || codexLoginStatus === "denied" || codexLoginStatus === "error" ? (
                 <button className="secondary-action h-10" type="button" onClick={() => void startCodexLogin()}>
                   <KeyRound className="size-4" aria-hidden="true" />
-                  重新开始
+                  {t("codexRestart")}
                 </button>
               ) : null}
             </div>
@@ -3691,7 +3741,7 @@ export function App() {
             <main className="gallery-page app-view" data-testid="gallery-loading-page">
               <div className="gallery-empty-state gallery-empty-state--boot" role="status">
                 <Loader2 className="size-5 animate-spin" aria-hidden="true" />
-                <p>正在载入 Gallery...</p>
+                <p>{t("galleryLoading")}</p>
               </div>
             </main>
           }
