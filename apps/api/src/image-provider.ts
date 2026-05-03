@@ -20,7 +20,9 @@ export interface ImageProviderInput {
 }
 
 export interface EditImageProviderInput extends ImageProviderInput {
-  referenceImage: ReferenceImageInput;
+  referenceImages: ReferenceImageInput[];
+  referenceImage?: ReferenceImageInput;
+  referenceAssetIds?: string[];
   referenceAssetId?: string;
 }
 
@@ -146,11 +148,11 @@ class OpenAIImageProvider implements ImageProvider {
 
   async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
     try {
-      const reference = await dataUrlToFile(input.referenceImage);
+      const references = await Promise.all(input.referenceImages.map((referenceImage) => dataUrlToFile(referenceImage)));
       const response = await this.client.images.edit(
         imageEditRequestBody({
           model: this.config.model,
-          image: [reference],
+          image: references,
           prompt: input.prompt,
           size: input.sizeApiValue,
           quality: input.quality,

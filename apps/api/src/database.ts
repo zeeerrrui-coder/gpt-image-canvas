@@ -131,9 +131,19 @@ CREATE TABLE IF NOT EXISTS generation_outputs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS generation_reference_assets (
+  generation_id TEXT NOT NULL REFERENCES generation_records(id) ON DELETE CASCADE,
+  asset_id TEXT NOT NULL REFERENCES assets(id),
+  position INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (generation_id, position)
+);
+
 CREATE INDEX IF NOT EXISTS generation_records_created_at_idx ON generation_records(created_at);
 CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_outputs(generation_id);
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
+CREATE INDEX IF NOT EXISTS generation_reference_assets_generation_id_idx ON generation_reference_assets(generation_id);
+CREATE INDEX IF NOT EXISTS generation_reference_assets_asset_id_idx ON generation_reference_assets(asset_id);
 `);
 
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");
@@ -160,6 +170,7 @@ ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
 
+backfillGenerationReferenceAssets();
 ensureProviderConfigRow();
 
 export const db = drizzle(sqlite, { schema });
@@ -175,6 +186,25 @@ function ensureColumn(tableName: string, columnName: string, definition: string)
   }
 
   sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
+}
+
+function backfillGenerationReferenceAssets(): void {
+  sqlite.exec(`
+    INSERT OR IGNORE INTO generation_reference_assets (generation_id, asset_id, position, created_at)
+    SELECT generation_records.id, generation_records.reference_asset_id, 0, generation_records.created_at
+    FROM generation_records
+    WHERE generation_records.reference_asset_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM assets
+        WHERE assets.id = generation_records.reference_asset_id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM generation_reference_assets
+        WHERE generation_reference_assets.generation_id = generation_records.id
+      )
+  `);
 }
 
 function ensureProviderConfigRow(): void {

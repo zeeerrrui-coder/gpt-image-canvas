@@ -199,6 +199,8 @@ export interface ReferenceImageInput {
   fileName?: string;
 }
 
+export const MAX_REFERENCE_IMAGES = 3;
+
 export interface GenerateImageRequest {
   prompt: string;
   presetId: StylePresetId;
@@ -210,7 +212,9 @@ export interface GenerateImageRequest {
 }
 
 export interface EditImageRequest extends GenerateImageRequest {
-  referenceImage: ReferenceImageInput;
+  referenceImages: ReferenceImageInput[];
+  referenceImage?: ReferenceImageInput;
+  referenceAssetIds?: string[];
   referenceAssetId?: string;
 }
 
@@ -250,6 +254,7 @@ export interface GenerationRecord {
   count: number;
   status: GenerationStatus;
   error?: string;
+  referenceAssetIds?: string[];
   referenceAssetId?: string;
   createdAt: string;
   outputs: GenerationOutput[];

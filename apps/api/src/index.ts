@@ -14,6 +14,7 @@ import {
 import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
+  MAX_REFERENCE_IMAGES,
   OUTPUT_FORMATS,
   PROVIDER_SOURCE_IDS,
   SIZE_PRESETS,
@@ -456,43 +457,129 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
     return base;
   }
 
-  if (!isRecord(input) || !isRecord(input.referenceImage)) {
+  if (!isRecord(input)) {
     return {
       ok: false,
-      error: errorResponse("unsupported_provider_behavior", "编辑图像需要提供一个参考图像。")
+      error: errorResponse("unsupported_provider_behavior", "编辑图像需要提供 1-3 张参考图像。")
     };
   }
 
-  const dataUrl = input.referenceImage.dataUrl;
-  if (typeof dataUrl !== "string" || dataUrl.trim().length === 0) {
-    return {
-      ok: false,
-      error: errorResponse("unsupported_provider_behavior", "参考图像格式不受支持。")
-    };
+  const referenceImages = parseReferenceImages(input);
+  if (!referenceImages.ok) {
+    return referenceImages;
   }
 
-  const fileName = input.referenceImage.fileName;
-  const referenceAssetId = parseOptionalString(input.referenceAssetId);
-
-  if (referenceAssetId && !getStoredAssetFile(referenceAssetId)) {
-    return {
-      ok: false,
-      error: errorResponse("invalid_request", "找不到可记录的本地参考图像资源。")
-    };
+  const referenceAssetIds = parseReferenceAssetIds(input, referenceImages.value.length);
+  if (!referenceAssetIds.ok) {
+    return referenceAssetIds;
   }
 
-  const referenceImage: ReferenceImageInput = {
-    dataUrl,
-    fileName: typeof fileName === "string" && fileName.trim() ? fileName.trim() : undefined
-  };
+  for (const referenceAssetId of referenceAssetIds.value) {
+    if (!getStoredAssetFile(referenceAssetId)) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_request", "找不到可记录的本地参考图像资源。")
+      };
+    }
+  }
 
   return {
     ok: true,
     value: {
       ...base.value,
-      referenceImage,
-      referenceAssetId
+      referenceImages: referenceImages.value,
+      referenceImage: referenceImages.value[0],
+      referenceAssetIds: referenceAssetIds.value.length > 0 ? referenceAssetIds.value : undefined,
+      referenceAssetId: referenceAssetIds.value[0]
     }
+  };
+}
+
+function parseReferenceImages(input: Record<string, unknown>): ParseResult<ReferenceImageInput[]> {
+  const rawReferenceImages = Array.isArray(input.referenceImages)
+    ? input.referenceImages
+    : isRecord(input.referenceImage)
+      ? [input.referenceImage]
+      : undefined;
+
+  if (!rawReferenceImages) {
+    return {
+      ok: false,
+      error: errorResponse("unsupported_provider_behavior", "编辑图像需要提供 1-3 张参考图像。")
+    };
+  }
+
+  if (rawReferenceImages.length < 1 || rawReferenceImages.length > MAX_REFERENCE_IMAGES) {
+    return {
+      ok: false,
+      error: errorResponse("unsupported_provider_behavior", `参考图像数量必须是 1-${MAX_REFERENCE_IMAGES} 张。`)
+    };
+  }
+
+  const referenceImages: ReferenceImageInput[] = [];
+  for (const rawReferenceImage of rawReferenceImages) {
+    if (!isRecord(rawReferenceImage)) {
+      return {
+        ok: false,
+        error: errorResponse("unsupported_provider_behavior", "参考图像格式不受支持。")
+      };
+    }
+
+    const dataUrl = rawReferenceImage.dataUrl;
+    if (typeof dataUrl !== "string" || dataUrl.trim().length === 0) {
+      return {
+        ok: false,
+        error: errorResponse("unsupported_provider_behavior", "参考图像格式不受支持。")
+      };
+    }
+
+    const fileName = rawReferenceImage.fileName;
+    referenceImages.push({
+      dataUrl,
+      fileName: typeof fileName === "string" && fileName.trim() ? fileName.trim() : undefined
+    });
+  }
+
+  return {
+    ok: true,
+    value: referenceImages
+  };
+}
+
+function parseReferenceAssetIds(input: Record<string, unknown>, referenceImageCount: number): ParseResult<string[]> {
+  const legacyReferenceAssetId = parseOptionalString(input.referenceAssetId);
+  const rawReferenceAssetIds = Array.isArray(input.referenceAssetIds)
+    ? input.referenceAssetIds
+    : legacyReferenceAssetId
+      ? [legacyReferenceAssetId]
+      : [];
+
+  if (
+    rawReferenceAssetIds.length > MAX_REFERENCE_IMAGES ||
+    (rawReferenceAssetIds.length > 0 && rawReferenceAssetIds.length !== referenceImageCount)
+  ) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "参考图像资源 ID 数量必须与参考图像数量一致。")
+    };
+  }
+
+  const referenceAssetIds: string[] = [];
+  for (const rawReferenceAssetId of rawReferenceAssetIds) {
+    const referenceAssetId = parseOptionalString(rawReferenceAssetId);
+    if (!referenceAssetId) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_request", "参考图像资源 ID 格式不受支持。")
+      };
+    }
+
+    referenceAssetIds.push(referenceAssetId);
+  }
+
+  return {
+    ok: true,
+    value: referenceAssetIds
   };
 }
 

@@ -95,8 +95,20 @@ export const generationOutputs = sqliteTable("generation_outputs", {
   createdAt: text("created_at").notNull()
 });
 
+export const generationReferenceAssets = sqliteTable("generation_reference_assets", {
+  generationId: text("generation_id")
+    .notNull()
+    .references(() => generationRecords.id, { onDelete: "cascade" }),
+  assetId: text("asset_id")
+    .notNull()
+    .references(() => assets.id),
+  position: integer("position").notNull(),
+  createdAt: text("created_at").notNull()
+});
+
 export const generationRelations = relations(generationRecords, ({ many, one }) => ({
   outputs: many(generationOutputs),
+  referenceAssets: many(generationReferenceAssets),
   referenceAsset: one(assets, {
     fields: [generationRecords.referenceAssetId],
     references: [assets.id]
@@ -110,6 +122,17 @@ export const outputRelations = relations(generationOutputs, ({ one }) => ({
   }),
   asset: one(assets, {
     fields: [generationOutputs.assetId],
+    references: [assets.id]
+  })
+}));
+
+export const referenceAssetRelations = relations(generationReferenceAssets, ({ one }) => ({
+  generation: one(generationRecords, {
+    fields: [generationReferenceAssets.generationId],
+    references: [generationRecords.id]
+  }),
+  asset: one(assets, {
+    fields: [generationReferenceAssets.assetId],
     references: [assets.id]
   })
 }));

@@ -207,11 +207,13 @@ function createResponsesInputContent(input: ResponsesImageInput): Array<Record<s
     }
   ];
 
-  if ("referenceImage" in input) {
-    content.push({
-      type: "input_image",
-      image_url: normalizeReferenceImageDataUrl(input.referenceImage)
-    });
+  if ("referenceImages" in input) {
+    for (const referenceImage of input.referenceImages) {
+      content.push({
+        type: "input_image",
+        image_url: normalizeReferenceImageDataUrl(referenceImage)
+      });
+    }
   }
 
   return content;

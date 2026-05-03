@@ -12,7 +12,7 @@ import type {
   ProjectState
 } from "./contracts.js";
 import { db } from "./database.js";
-import { assets, generationOutputs, generationRecords, projects } from "./schema.js";
+import { assets, generationOutputs, generationRecords, generationReferenceAssets, projects } from "./schema.js";
 
 export const DEFAULT_PROJECT_ID = "default";
 const DEFAULT_PROJECT_NAME = "Default Project";
@@ -199,6 +199,16 @@ function readGenerationHistory(): ApiGenerationRecord[] {
     .where(inArray(generationOutputs.generationId, generationIds))
     .orderBy(generationOutputs.createdAt)
     .all();
+  const referenceRows = db
+    .select()
+    .from(generationReferenceAssets)
+    .where(inArray(generationReferenceAssets.generationId, generationIds))
+    .all()
+    .sort((left, right) =>
+      left.generationId === right.generationId
+        ? left.position - right.position
+        : left.generationId.localeCompare(right.generationId)
+    );
 
   const assetIds = outputs.flatMap((output) => (output.assetId ? [output.assetId] : []));
   const assetRows =
@@ -210,6 +220,12 @@ function readGenerationHistory(): ApiGenerationRecord[] {
     const existing = outputsByGenerationId.get(output.generationId) ?? [];
     existing.push(output);
     outputsByGenerationId.set(output.generationId, existing);
+  }
+  const referenceAssetIdsByGenerationId = new Map<string, string[]>();
+  for (const referenceRow of referenceRows) {
+    const existing = referenceAssetIdsByGenerationId.get(referenceRow.generationId) ?? [];
+    existing.push(referenceRow.assetId);
+    referenceAssetIdsByGenerationId.set(referenceRow.generationId, existing);
   }
 
   return records.flatMap((record) => {
@@ -240,6 +256,7 @@ function readGenerationHistory(): ApiGenerationRecord[] {
         count: record.count,
         status: record.status as GenerationStatus,
         error: record.error ?? undefined,
+        referenceAssetIds: referenceAssetIdsByGenerationId.get(record.id) ?? (record.referenceAssetId ? [record.referenceAssetId] : undefined),
         referenceAssetId: record.referenceAssetId ?? undefined,
         createdAt: record.createdAt,
         outputs: mappedOutputs

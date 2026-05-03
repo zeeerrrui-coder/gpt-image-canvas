@@ -11,7 +11,8 @@ import type {
   GenerationResponse,
   GenerationStatus,
   ImageSize,
-  OutputFormat
+  OutputFormat,
+  ReferenceImageInput
 } from "./contracts.js";
 import { db } from "./database.js";
 import {
@@ -29,10 +30,12 @@ import {
   type CosAssetLocation
 } from "./asset-storage.js";
 import { runtimePaths } from "./runtime.js";
-import { assets, generationOutputs, generationRecords } from "./schema.js";
+import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "./schema.js";
 import { getActiveCosStorageConfig } from "./storage-config.js";
 
 const BATCH_CONCURRENCY = 2;
+const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
+const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const localAssetStorage = new LocalAssetStorageAdapter();
 
 interface StoredAssetFile {
@@ -70,6 +73,7 @@ interface AssetCloudStorageRecord {
 
 type PersistedGenerationInput = ImageProviderInput & {
   mode: "generate" | "edit";
+  referenceAssetIds?: string[];
   referenceAssetId?: string;
 };
 
@@ -104,15 +108,22 @@ export async function runReferenceImageGeneration(
   provider: ImageProvider,
   signal?: AbortSignal
 ): Promise<GenerationResponse> {
+  const referenceAssetIds = await ensureReferenceAssetIds(input);
+  const inputWithReferenceAssets: EditImageProviderInput = {
+    ...input,
+    referenceAssetIds,
+    referenceAssetId: referenceAssetIds[0]
+  };
+
   const outputs = await mapWithConcurrency(
-    Array.from({ length: input.count }, (_, index) => index),
+    Array.from({ length: inputWithReferenceAssets.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => editSingleOutput(input, provider, signal)
+    async () => editSingleOutput(inputWithReferenceAssets, provider, signal)
   );
 
   const record = saveGenerationRecord(
     {
-      ...input,
+      ...inputWithReferenceAssets,
       mode: "edit"
     },
     outputs
@@ -121,6 +132,78 @@ export async function runReferenceImageGeneration(
   return {
     record
   };
+}
+
+async function ensureReferenceAssetIds(input: EditImageProviderInput): Promise<string[]> {
+  if (input.referenceAssetIds?.length === input.referenceImages.length) {
+    return input.referenceAssetIds;
+  }
+
+  const savedReferenceAssets = await Promise.all(input.referenceImages.map(saveReferenceImageInput));
+  return savedReferenceAssets.map((asset) => asset.id);
+}
+
+async function saveReferenceImageInput(input: ReferenceImageInput): Promise<GeneratedAsset> {
+  const parsed = referenceDataUrlToBytes(input);
+  const imageSize = await readImageSize(parsed.bytes);
+  if (!imageSize) {
+    throw new ProviderError("unsupported_provider_behavior", "Reference image dimensions could not be read.", 400);
+  }
+
+  const assetId = randomUUID();
+  const extension = extensionForMimeType(parsed.mimeType);
+  const fileName = `${assetId}.${extension}`;
+  const relativePath = `assets/${fileName}`;
+  const filePath = resolve(runtimePaths.dataDir, relativePath);
+  const createdAt = new Date().toISOString();
+
+  await localAssetStorage.putObject({ filePath, bytes: parsed.bytes });
+  db.insert(assets)
+    .values({
+      id: assetId,
+      fileName,
+      relativePath,
+      mimeType: parsed.mimeType,
+      width: imageSize.width,
+      height: imageSize.height,
+      createdAt
+    })
+    .run();
+
+  return {
+    id: assetId,
+    url: `/api/assets/${assetId}`,
+    fileName,
+    mimeType: parsed.mimeType,
+    width: imageSize.width,
+    height: imageSize.height
+  };
+}
+
+function referenceDataUrlToBytes(input: ReferenceImageInput): { bytes: Buffer; mimeType: string } {
+  const match = /^data:([^;,]+);base64,(.+)$/u.exec(input.dataUrl);
+  if (!match) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像格式不受支持。", 400);
+  }
+
+  const mimeType = match[1].toLowerCase();
+  if (!SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像必须是 PNG、JPEG 或 WebP 格式。", 400);
+  }
+
+  const bytes = Buffer.from(match[2], "base64");
+  if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
+  }
+
+  return {
+    bytes,
+    mimeType: mimeType === "image/jpg" ? "image/jpeg" : mimeType
+  };
+}
+
+function extensionForMimeType(mimeType: string): string {
+  return mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
 }
 
 export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined {
@@ -325,6 +408,9 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
   const status = resolveGenerationStatus(successCount, failureCount);
   const error = failureCount > 0 ? `${failureCount} 张图像生成失败。` : undefined;
 
+  const referenceAssetIds = input.referenceAssetIds ?? (input.referenceAssetId ? [input.referenceAssetId] : []);
+  const primaryReferenceAssetId = referenceAssetIds[0] ?? input.referenceAssetId;
+
   db.insert(generationRecords)
     .values({
       id: generationId,
@@ -339,10 +425,21 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
       count: input.count,
       status,
       error,
-      referenceAssetId: input.referenceAssetId ?? null,
+      referenceAssetId: primaryReferenceAssetId ?? null,
       createdAt
     })
     .run();
+
+  referenceAssetIds.forEach((assetId, position) => {
+    db.insert(generationReferenceAssets)
+      .values({
+        generationId,
+        assetId,
+        position,
+        createdAt
+      })
+      .run();
+  });
 
   for (const output of outputs) {
     if (output.asset) {
@@ -392,7 +489,8 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
     count: input.count,
     status,
     error,
-    referenceAssetId: input.referenceAssetId,
+    referenceAssetIds: referenceAssetIds.length > 0 ? referenceAssetIds : undefined,
+    referenceAssetId: primaryReferenceAssetId,
     createdAt,
     outputs: outputs.map(toGenerationOutput)
   };

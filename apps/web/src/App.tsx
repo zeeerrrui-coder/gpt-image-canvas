@@ -51,6 +51,7 @@ import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   MAX_IMAGE_DIMENSION,
+  MAX_REFERENCE_IMAGES,
   MIN_IMAGE_DIMENSION,
   OUTPUT_FORMATS,
   SIZE_PRESETS,
@@ -187,8 +188,8 @@ interface GenerationSubmitInput {
 }
 
 interface GenerationReferenceInput {
-  referenceImage: ReferenceImageInput;
-  referenceAssetId?: string;
+  referenceImages: ReferenceImageInput[];
+  referenceAssetIds?: string[];
 }
 
 interface GenerationPlaceholderPlacement {
@@ -222,25 +223,29 @@ interface StorageConfigFormState {
   keyPrefix: string;
 }
 
+interface ReferenceSelectionItem {
+  assetId: TLAssetId | null;
+  localAssetId?: string;
+  name: string;
+  sourceUrl: string;
+  width: number;
+  height: number;
+}
+
 type ReferenceSelection =
   | {
-      status: "none" | "multiple" | "non-image" | "unreadable";
+      status: "none" | "too-many" | "non-image" | "unreadable";
       hint: string;
     }
   | {
       status: "ready";
-      assetId: TLAssetId | null;
-      localAssetId?: string;
-      name: string;
-      sourceUrl: string;
-      width: number;
-      height: number;
+      references: ReferenceSelectionItem[];
       hint: string;
     };
 
 const missingReferenceSelection: ReferenceSelection = {
   status: "none",
-  hint: "选择画布中的一张图片后，可用它作为参考生成到画布。"
+  hint: `选择画布中的 1-${MAX_REFERENCE_IMAGES} 张图片后，可用它们作为参考生成到画布。`
 };
 
 const qualityLabels: Record<ImageQuality, string> = {
@@ -475,13 +480,30 @@ function generationModeToRecordMode(mode: GenerationMode): GenerationRecord["mod
   return mode === "reference" ? "edit" : "generate";
 }
 
+function referenceAssetIdsForRecord(record: GenerationRecord): string[] {
+  if (record.referenceAssetIds?.length) {
+    return record.referenceAssetIds;
+  }
+
+  return record.referenceAssetId ? [record.referenceAssetId] : [];
+}
+
+function referenceAssetIdsForSelection(selection: Extract<ReferenceSelection, { status: "ready" }>): string[] | undefined {
+  const referenceAssetIds = selection.references.map((reference) => reference.localAssetId);
+  return referenceAssetIds.every((referenceAssetId): referenceAssetId is string => Boolean(referenceAssetId))
+    ? referenceAssetIds
+    : undefined;
+}
+
 function createTemporaryGenerationRecord(input: {
   requestId: number;
   submitInput: GenerationSubmitInput;
   requestMode: GenerationMode;
+  referenceAssetIds?: string[];
   referenceAssetId?: string;
 }): GenerationRecord {
   const promptValue = input.submitInput.prompt.trim();
+  const referenceAssetIds = input.referenceAssetIds ?? (input.referenceAssetId ? [input.referenceAssetId] : undefined);
 
   return {
     id: `local-generation-${input.requestId}`,
@@ -494,7 +516,8 @@ function createTemporaryGenerationRecord(input: {
     outputFormat: input.submitInput.outputFormat,
     count: input.submitInput.count,
     status: "running",
-    referenceAssetId: input.referenceAssetId,
+    referenceAssetIds,
+    referenceAssetId: referenceAssetIds?.[0] ?? input.referenceAssetId,
     createdAt: new Date().toISOString(),
     outputs: []
   };
@@ -860,48 +883,64 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
     return missingReferenceSelection;
   }
 
-  if (selectedShapes.length > 1) {
-    return {
-      status: "multiple",
-      hint: "当前选择了多个对象。只选择一张图片即可启用参考图到画布。"
-    };
-  }
-
-  const shape = selectedShapes[0];
-  if (shape.type !== "image") {
+  if (selectedShapes.some((shape) => shape.type !== "image")) {
     return {
       status: "non-image",
-      hint: "当前对象不是图片。请选择画布中的单张图片作为参考。"
+      hint: `当前选择中包含非图片对象。请只圈选 1-${MAX_REFERENCE_IMAGES} 张图片作为参考。`
     };
   }
 
-  const imageShape = shape as TLImageShape;
-  const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
-  const sourceUrl = getImageSourceUrl(imageShape, asset);
-
-  if (!sourceUrl) {
+  if (selectedShapes.length > MAX_REFERENCE_IMAGES) {
     return {
-      status: "unreadable",
-      hint: "这张图片缺少可读取的数据源，无法作为参考图。"
+      status: "too-many",
+      hint: `当前选择了 ${selectedShapes.length} 张图片。参考图最多支持 ${MAX_REFERENCE_IMAGES} 张。`
     };
   }
 
-  if (!isReadableReferenceSource(sourceUrl, asset)) {
-    return {
-      status: "unreadable",
-      hint: "这张图片当前无法被浏览器读取，请选择本地生成或已导入的 PNG、JPEG、WebP 图片。"
-    };
+  const references: Array<ReferenceSelectionItem & { sortX: number; sortY: number }> = [];
+  for (const shape of selectedShapes) {
+    const imageShape = shape as TLImageShape;
+    const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
+    const sourceUrl = getImageSourceUrl(imageShape, asset);
+
+    if (!sourceUrl) {
+      return {
+        status: "unreadable",
+        hint: "选中的图片缺少可读取的数据源，无法作为参考图。"
+      };
+    }
+
+    if (!isReadableReferenceSource(sourceUrl, asset)) {
+      return {
+        status: "unreadable",
+        hint: "选中的图片当前无法被浏览器读取，请只选择本地生成或已导入的 PNG、JPEG、WebP 图片。"
+      };
+    }
+
+    const bounds = editor.getShapePageBounds(imageShape);
+    references.push({
+      assetId: imageShape.props.assetId,
+      localAssetId: getLocalAssetId(asset, sourceUrl),
+      name: getReferenceName(asset, sourceUrl),
+      sourceUrl,
+      width: asset?.type === "image" ? asset.props.w : imageShape.props.w,
+      height: asset?.type === "image" ? asset.props.h : imageShape.props.h,
+      sortX: bounds?.x ?? 0,
+      sortY: bounds?.y ?? 0
+    });
   }
+
+  const sortedReferences = references
+    .sort((left, right) => (left.sortY === right.sortY ? left.sortX - right.sortX : left.sortY - right.sortY))
+    .map(({ sortX: _sortX, sortY: _sortY, ...reference }) => reference);
 
   return {
     status: "ready",
-    assetId: imageShape.props.assetId,
-    localAssetId: getLocalAssetId(asset, sourceUrl),
-    name: getReferenceName(asset, sourceUrl),
-    sourceUrl,
-    width: asset?.type === "image" ? asset.props.w : imageShape.props.w,
-    height: asset?.type === "image" ? asset.props.h : imageShape.props.h,
-    hint: "已选中一张图片，将使用它作为本次参考图。"
+    references: sortedReferences,
+    hint:
+      sortedReferences.length === 1
+        ? "已选中 1 张图片，将使用它作为本次参考图。"
+        : `已选中 ${sortedReferences.length} 张参考图，将按画布位置从上到下、从左到右发送。`
   };
 }
 
@@ -915,13 +954,20 @@ function areReferenceSelectionsEqual(left: ReferenceSelection, right: ReferenceS
   }
 
   return (
-    left.assetId === right.assetId &&
-    left.localAssetId === right.localAssetId &&
-    left.name === right.name &&
-    left.sourceUrl === right.sourceUrl &&
-    left.width === right.width &&
-    left.height === right.height &&
-    left.hint === right.hint
+    left.hint === right.hint &&
+    left.references.length === right.references.length &&
+    left.references.every((leftReference, index) => {
+      const rightReference = right.references[index];
+      return (
+        rightReference !== undefined &&
+        leftReference.assetId === rightReference.assetId &&
+        leftReference.localAssetId === rightReference.localAssetId &&
+        leftReference.name === rightReference.name &&
+        leftReference.sourceUrl === rightReference.sourceUrl &&
+        leftReference.width === rightReference.width &&
+        leftReference.height === rightReference.height
+      );
+    })
   );
 }
 
@@ -1323,7 +1369,7 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-async function readReferenceImage(selection: Extract<ReferenceSelection, { status: "ready" }>, signal: AbortSignal): Promise<{
+async function readReferenceImage(selection: ReferenceSelectionItem, signal: AbortSignal): Promise<{
   dataUrl: string;
   fileName: string;
 }> {
@@ -2450,7 +2496,7 @@ export function App() {
     input: GenerationSubmitInput,
     requestMode: GenerationMode,
     resolveReference?: (signal: AbortSignal) => Promise<GenerationReferenceInput | undefined>,
-    referenceAssetId?: string
+    referenceAssetIds?: string[]
   ): Promise<void> {
     setGenerationError("");
     setGenerationMessage("");
@@ -2480,7 +2526,7 @@ export function App() {
       requestId,
       submitInput: input,
       requestMode,
-      referenceAssetId
+      referenceAssetIds
     });
 
     activeGenerationsRef.current.set(requestId, {
@@ -2494,8 +2540,8 @@ export function App() {
 
     try {
       const referenceForRequest = requestMode === "reference" ? await resolveReference?.(controller.signal) : undefined;
-      if (requestMode === "reference" && !referenceForRequest) {
-        throw new Error("请先选择一张可用的参考图像。");
+      if (requestMode === "reference" && (!referenceForRequest || referenceForRequest.referenceImages.length === 0)) {
+        throw new Error(`请先选择 1-${MAX_REFERENCE_IMAGES} 张可用的参考图像。`);
       }
 
       const requestBody: Record<string, unknown> = {
@@ -2509,9 +2555,9 @@ export function App() {
       };
 
       if (requestMode === "reference" && referenceForRequest) {
-        requestBody.referenceImage = referenceForRequest.referenceImage;
-        if (referenceForRequest.referenceAssetId) {
-          requestBody.referenceAssetId = referenceForRequest.referenceAssetId;
+        requestBody.referenceImages = referenceForRequest.referenceImages;
+        if (referenceForRequest.referenceAssetIds?.length) {
+          requestBody.referenceAssetIds = referenceForRequest.referenceAssetIds;
         }
       }
 
@@ -2598,11 +2644,15 @@ export function App() {
           return undefined;
         }
 
+        const referenceAssetIds = referenceAssetIdsForSelection(referenceSelection);
+
         return {
-          referenceImage: await readReferenceImage(referenceSelection, signal),
-          referenceAssetId: referenceSelection.localAssetId
+          referenceImages: await Promise.all(referenceSelection.references.map((reference) => readReferenceImage(reference, signal))),
+          referenceAssetIds
         };
-      }, referenceSelection.status === "ready" ? referenceSelection.localAssetId : undefined);
+      }, referenceSelection.status === "ready"
+        ? referenceAssetIdsForSelection(referenceSelection)
+        : undefined);
       return;
     }
 
@@ -2678,7 +2728,8 @@ export function App() {
     setOutputFormat(record.outputFormat);
     setCount(nextCount);
 
-    const nextGenerationMode: GenerationMode = record.referenceAssetId ? "reference" : "text";
+    const referenceAssetIds = referenceAssetIdsForRecord(record);
+    const nextGenerationMode: GenerationMode = referenceAssetIds.length > 0 ? "reference" : "text";
     setGenerationMode(nextGenerationMode);
 
     await executeGeneration(
@@ -2692,13 +2743,13 @@ export function App() {
         count: nextCount
       },
       nextGenerationMode,
-      record.referenceAssetId
+      referenceAssetIds.length > 0
         ? async (signal) => ({
-            referenceImage: await readStoredReferenceImage(record.referenceAssetId!, signal),
-            referenceAssetId: record.referenceAssetId
+            referenceImages: await Promise.all(referenceAssetIds.map((referenceAssetId) => readStoredReferenceImage(referenceAssetId, signal))),
+            referenceAssetIds
           })
         : undefined,
-      record.referenceAssetId
+      referenceAssetIds.length > 0 ? referenceAssetIds : undefined
     );
   }
 
@@ -3012,21 +3063,30 @@ export function App() {
               <div className="flex items-start gap-2">
                 <ImageIcon className={`mt-0.5 size-4 ${isReferenceReady ? "text-blue-600" : "text-neutral-400"}`} aria-hidden="true" />
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">{isReferenceReady ? "参考图到画布已就绪" : "请选择一张参考图"}</p>
+                  <p className="text-sm font-semibold">
+                    {referenceSelection.status === "ready"
+                      ? `${referenceSelection.references.length} 张参考图到画布已就绪`
+                      : `请选择 1-${MAX_REFERENCE_IMAGES} 张参考图`}
+                  </p>
                   <p className="mt-1 text-xs leading-5" data-testid="reference-hint">
                     {referenceSelection.hint}
                   </p>
                   {referenceSelection.status === "ready" ? (
-                    <div className="reference-preview-card">
-                      <img
-                        alt={`参考图：${referenceSelection.name}`}
-                        className="reference-preview-card__image"
-                        src={referenceSelection.sourceUrl}
-                      />
-                      <p className="min-w-0 flex-1 truncate text-xs font-medium" data-testid="reference-name">
-                        {referenceSelection.name}
-                        <span>{Math.round(referenceSelection.width)} x {Math.round(referenceSelection.height)}</span>
-                      </p>
+                    <div className="reference-preview-list">
+                      {referenceSelection.references.map((reference, index) => (
+                        <div className="reference-preview-card" key={`${reference.sourceUrl}-${index}`}>
+                          <span className="reference-preview-card__index">{index + 1}</span>
+                          <img
+                            alt={`参考图 ${index + 1}：${reference.name}`}
+                            className="reference-preview-card__image"
+                            src={reference.sourceUrl}
+                          />
+                          <p className="min-w-0 flex-1 truncate text-xs font-medium" data-testid="reference-name">
+                            {reference.name}
+                            <span>{Math.round(reference.width)} x {Math.round(reference.height)}</span>
+                          </p>
+                        </div>
+                      ))}
                       <button
                         className="secondary-action h-8 shrink-0 px-2 text-xs"
                         type="button"

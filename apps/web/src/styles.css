@@ -2941,21 +2941,39 @@ a:focus-visible {
   flex: 1 1 auto;
 }
 
+.reference-preview-list {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
 .reference-preview-card {
   display: grid;
-  grid-template-columns: 3.4rem minmax(0, 1fr) auto;
+  grid-template-columns: 1.35rem 3.1rem minmax(0, 1fr);
   align-items: center;
   gap: 0.65rem;
-  margin-top: 0.8rem;
   border: 1px solid rgb(15 118 110 / 0.18);
   border-radius: 8px;
   background: rgb(255 253 248 / 0.78);
   padding: 0.45rem;
 }
 
+.reference-preview-card__index {
+  display: inline-grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: #125d56;
+  color: #fffaf2;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
 .reference-preview-card__image {
-  width: 3.4rem;
-  height: 3.4rem;
+  width: 3.1rem;
+  height: 3.1rem;
   border-radius: 6px;
   object-fit: cover;
   background: #2c211a;
@@ -2972,6 +2990,10 @@ a:focus-visible {
   color: var(--muted-ink);
   font-family: var(--font-mono);
   font-size: 0.66rem;
+}
+
+.reference-preview-list > .secondary-action {
+  justify-self: start;
 }
 
 .history-toggle,
@@ -3935,6 +3957,11 @@ a:focus-visible {
   background: rgb(255 247 237 / 0.05);
 }
 
+.app-root[data-canvas-theme="dark"] .reference-preview-card__index {
+  background: rgb(45 212 191 / 0.22);
+  color: #ccfbf1;
+}
+
 .app-root[data-canvas-theme="dark"] .history-icon-action {
   border-color: var(--line);
   background: #161210;
@@ -4406,11 +4433,10 @@ a:focus-visible {
   }
 
   .reference-preview-card {
-    grid-template-columns: 3.1rem minmax(0, 1fr);
+    grid-template-columns: 1.35rem 3.1rem minmax(0, 1fr);
   }
 
-  .reference-preview-card .secondary-action {
-    grid-column: 1 / -1;
+  .reference-preview-list > .secondary-action {
     width: 100%;
   }
 
