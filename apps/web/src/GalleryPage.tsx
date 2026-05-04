@@ -328,6 +328,10 @@ export function GalleryPage({ onDeleted, onReuse, onImport }: GalleryPageProps) 
           onDelete={() => requestDelete(selectedItem)}
           onDownload={() => downloadItem(selectedItem)}
           onReuse={() => onReuse(selectedItem)}
+          onImport={() => {
+            onImport(selectedItem);
+            setSelectedItem(null);
+          }}
         />
       ) : null}
 
@@ -622,7 +626,8 @@ function GalleryDetailDialog({
   onCopy,
   onDelete,
   onDownload,
-  onReuse
+  onReuse,
+  onImport
 }: {
   deleting: boolean;
   item: GalleryImageItem;
@@ -631,6 +636,7 @@ function GalleryDetailDialog({
   onDelete: () => void;
   onDownload: () => void;
   onReuse: () => void;
+  onImport: () => void;
 }) {
   const [promptExpanded, setPromptExpanded] = useState(false);
   const { formatDateTime, t } = useI18n();
@@ -691,6 +697,10 @@ function GalleryDetailDialog({
           <button className="secondary-action h-10" type="button" onClick={onReuse}>
             <RotateCcw className="size-4" aria-hidden="true" />
             {t("commonReuse")}
+          </button>
+          <button className="secondary-action h-10" type="button" onClick={onImport}>
+            <Plus className="size-4" aria-hidden="true" />
+            {t("galleryActionImport")}
           </button>
           <button className="secondary-action h-10 text-red-700 hover:text-red-800" disabled={deleting} type="button" onClick={onDelete}>
             {deleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
