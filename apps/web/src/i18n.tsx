@@ -309,6 +309,8 @@ const zhMessages = {
   historyHideOnCanvas: "在画布中隐藏",
   historyDeleteTitle: "从历史和画布中删除",
   historyDeleteConfirm: "删除这条生成记录？画布上对应的图也会一起删掉。",
+  historyDeleteConfirmWithSuccess: ({ count }: { count: number }) =>
+    `这条记录里有 ${count} 张已成功生成的图。删除后画布上的这 ${count} 张图、画廊、本地文件和云端备份都会一起永久消失，不可恢复。确定要全部删除吗？`,
   historyDeleteFailed: "删除请求失败。",
   historyDeleteHttpError: ({ status }: { status: number }) => `删除失败，状态 ${status}。`,
   generationLocatePending: "已定位到生成中的任务。",
@@ -625,6 +627,8 @@ const enMessages: I18nMessages = {
   historyHideOnCanvas: "Hide on canvas",
   historyDeleteTitle: "Delete from history and canvas",
   historyDeleteConfirm: "Delete this generation record? The matching images on the canvas will be removed too.",
+  historyDeleteConfirmWithSuccess: ({ count }) =>
+    `This record contains ${count} successful image(s). Deleting it will also remove those ${count} image(s) from the canvas, gallery, local disk, and cloud backup permanently. Continue?`,
   historyDeleteFailed: "Delete request failed.",
   historyDeleteHttpError: ({ status }) => `Delete failed (status ${status}).`,
   generationLocatePending: "Located the generating task.",

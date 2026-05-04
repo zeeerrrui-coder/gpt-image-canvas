@@ -3199,9 +3199,15 @@ export function App() {
   }
 
   async function deleteHistoryRecord(record: GenerationRecord): Promise<void> {
-    if (!window.confirm(t("historyDeleteConfirm"))) {
+    const succeededCount = record.outputs.filter((output) => output.status === "succeeded" && output.asset).length;
+    const confirmMessage = succeededCount > 0
+      ? t("historyDeleteConfirmWithSuccess", { count: succeededCount })
+      : t("historyDeleteConfirm");
+    if (!window.confirm(confirmMessage)) {
       return;
     }
+
+    const isLocalOnly = record.id.startsWith("local-generation-");
     const editor = editorRef.current;
     const shapeIds = editor ? getCanvasShapesForRecord(record) : [];
     if (editor && shapeIds.length > 0) {
@@ -3213,6 +3219,10 @@ export function App() {
       next.delete(record.id);
       return next;
     });
+    if (isLocalOnly) {
+      // 临时 record（请求失败、还没写入 DB）只清前端历史，不调后端
+      return;
+    }
     try {
       const response = await fetch(`/api/generations/${encodeURIComponent(record.id)}`, { method: "DELETE" });
       if (!response.ok) {
