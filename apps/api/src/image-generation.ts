@@ -33,7 +33,7 @@ import { runtimePaths } from "./runtime.js";
 import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "./schema.js";
 import { getActiveCosStorageConfig } from "./storage-config.js";
 
-const BATCH_CONCURRENCY = 2;
+const BATCH_CONCURRENCY = 4;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const localAssetStorage = new LocalAssetStorageAdapter();
