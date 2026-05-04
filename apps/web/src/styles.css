@@ -3398,6 +3398,31 @@ a:focus-visible {
   background: linear-gradient(135deg, #cffafe, #a5f3fc);
 }
 
+.quick-size-button__cost {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: rgb(14 165 233 / 0.15);
+  color: #0369a1;
+  font-style: normal;
+  font-size: 0.7rem;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.quick-size-button.is-active .quick-size-button__cost {
+  background: rgb(255 255 255 / 0.2);
+  color: inherit;
+}
+
+.primary-action__cost {
+  margin-left: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
 .brand-tagline {
   margin-top: 0.33rem;
   color: var(--muted-ink);

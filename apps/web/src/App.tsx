@@ -57,6 +57,7 @@ import { CreditHistoryDialog } from "./CreditHistoryDialog";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import {
   CUSTOM_SIZE_PRESET_ID,
+  DEFAULT_CREDIT_COSTS,
   GENERATION_COUNTS,
   IMAGE_SIZE_MULTIPLE,
   IMAGE_QUALITIES,
@@ -69,8 +70,10 @@ import {
   OUTPUT_FORMATS,
   SIZE_PRESETS,
   STYLE_PRESETS,
+  creditCostForSize,
   resolutionTierForSize,
   validateImageSize,
+  type AppConfig,
   type AppUser,
   type AuthMeResponse,
   type AuthStatusResponse,
@@ -78,6 +81,7 @@ import {
   type CodexDevicePollResponse,
   type CodexDeviceStartResponse,
   type CodexLogoutResponse,
+  type CreditCostConfig,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -1976,6 +1980,7 @@ export function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [isSessionLoading, setIsSessionLoading] = useState(true);
+  const [creditCosts, setCreditCosts] = useState<CreditCostConfig>(DEFAULT_CREDIT_COSTS);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -2033,7 +2038,9 @@ export function App() {
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = prompt.trim() ? "" : t("promptRequired");
   const dimensionValidationMessage = sizeValidationMessage(width, height, t, locale);
-  const creditValidationMessage = currentUser && currentUser.credits < count ? t("insufficientCredits", { count }) : "";
+  const creditPerImage = useMemo(() => creditCostForSize({ width, height }, creditCosts), [creditCosts, height, width]);
+  const totalCreditCost = creditPerImage * count;
+  const creditValidationMessage = currentUser && currentUser.credits < totalCreditCost ? t("insufficientCredits", { count }) : "";
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
   const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
@@ -2298,6 +2305,25 @@ export function App() {
       controller.abort();
     };
   }, [isAdmin, loadAuthStatus]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch("/api/config", { signal: controller.signal });
+        if (!response.ok) {
+          return;
+        }
+        const config = (await response.json()) as AppConfig;
+        if (!controller.signal.aborted && config.creditCosts) {
+          setCreditCosts(config.creditCosts);
+        }
+      } catch {
+        // 网络错误时保持默认 1/2/4
+      }
+    })();
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!currentUser) {
@@ -3589,27 +3615,36 @@ export function App() {
           <div>
             <span className="control-label">{t("generationSizeLabel")}</span>
             <div className="quick-size-grid" data-testid="quick-size-presets">
-              {quickSizePresets.map((preset) => (
-                <button
-                  aria-pressed={sizePresetId === preset.id}
-                  className={sizePresetId === preset.id ? "quick-size-button is-active" : "quick-size-button"}
-                  key={preset.id}
-                  type="button"
-                  onClick={() => selectScenePreset(preset.id)}
-                >
-                  <span>{sizePresetLabel(preset, t)}</span>
-                  <small>
-                    {preset.width} x {preset.height}
-                  </small>
-                </button>
-              ))}
+              {quickSizePresets.map((preset) => {
+                const presetCost = creditCostForSize({ width: preset.width, height: preset.height }, creditCosts);
+                return (
+                  <button
+                    aria-pressed={sizePresetId === preset.id}
+                    className={sizePresetId === preset.id ? "quick-size-button is-active" : "quick-size-button"}
+                    key={preset.id}
+                    type="button"
+                    onClick={() => selectScenePreset(preset.id)}
+                  >
+                    <span>
+                      {sizePresetLabel(preset, t)}
+                      <em className="quick-size-button__cost">{presetCost} 分/张</em>
+                    </span>
+                    <small>
+                      {preset.width} x {preset.height}
+                    </small>
+                  </button>
+                );
+              })}
               <button
                 aria-pressed={sizePresetId === CUSTOM_SIZE_PRESET_ID}
                 className={sizePresetId === CUSTOM_SIZE_PRESET_ID ? "quick-size-button is-active" : "quick-size-button"}
                 type="button"
                 onClick={() => selectScenePreset(CUSTOM_SIZE_PRESET_ID)}
               >
-                <span>{t("customSize")}</span>
+                <span>
+                  {t("customSize")}
+                  <em className="quick-size-button__cost">按尺寸计</em>
+                </span>
                 <small>{t("customSizeManual")}</small>
               </button>
             </div>
@@ -3623,11 +3658,14 @@ export function App() {
                 data-testid="scene-preset"
                 onChange={(event) => selectScenePreset(event.target.value)}
               >
-                {SIZE_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {sizePresetOptionLabel(preset, t)}
-                  </option>
-                ))}
+                {SIZE_PRESETS.map((preset) => {
+                  const presetCost = creditCostForSize({ width: preset.width, height: preset.height }, creditCosts);
+                  return (
+                    <option key={preset.id} value={preset.id}>
+                      {sizePresetOptionLabel(preset, t)}（{presetCost} 分/张）
+                    </option>
+                  );
+                })}
                 <option value={CUSTOM_SIZE_PRESET_ID}>{t("customSizeOption")}</option>
               </select>
             </label>
@@ -3936,6 +3974,7 @@ export function App() {
               <Square className="size-4" aria-hidden="true" />
             )}
             {generationMode === "reference" ? t("generationStartReference") : t("generationStartText")}
+            <span className="primary-action__cost">（扣 {totalCreditCost} 分）</span>
           </button>
         </div>
       </aside>
