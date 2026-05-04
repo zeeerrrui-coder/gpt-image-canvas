@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { asc } from "drizzle-orm";
 import { eq } from "drizzle-orm";
 import { db } from "./database.js";
-import { sessions, users } from "./schema.js";
+import { creditTransactions, sessions, users } from "./schema.js";
 
 const scrypt = promisify(scryptCallback);
 const PASSWORD_KEY_LENGTH = 64;
@@ -23,6 +23,7 @@ export type UserStatus = "active" | "disabled";
 export interface AppUser {
   id: string;
   username: string;
+  nickname: string | null;
   role: UserRole;
   status: UserStatus;
   credits: number;
@@ -50,20 +51,37 @@ export async function registerUser(input: RegisterUserInput): Promise<AppUser> {
   const username = parseUsername(input.username);
   assertUsablePassword(input.password);
 
+  const bonusCredits = parseRegistrationBonusCredits(process.env.REGISTRATION_BONUS_CREDITS);
   const now = new Date().toISOString();
   const row = {
     id: randomUUID(),
     username,
     passwordHash: await hashPassword(input.password),
+    nickname: null,
     role: "user",
     status: "active",
-    credits: 0,
+    credits: bonusCredits,
     createdAt: now,
     updatedAt: now
   } satisfies typeof users.$inferInsert;
 
   try {
-    db.insert(users).values(row).run();
+    db.transaction((tx) => {
+      tx.insert(users).values(row).run();
+      if (bonusCredits > 0) {
+        tx.insert(creditTransactions)
+          .values({
+            id: randomUUID(),
+            userId: row.id,
+            type: "registration_bonus",
+            amount: bonusCredits,
+            balanceAfter: bonusCredits,
+            note: "新人注册赠送",
+            createdAt: now
+          })
+          .run();
+      }
+    });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       throw new Error("用户名已存在。");
@@ -72,6 +90,21 @@ export async function registerUser(input: RegisterUserInput): Promise<AppUser> {
   }
 
   return toAppUser(row);
+}
+
+const MAX_REGISTRATION_BONUS_CREDITS = 1000;
+
+function parseRegistrationBonusCredits(value: string | undefined): number {
+  const normalized = value?.trim();
+  if (!normalized || !/^\d+$/u.test(normalized)) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_REGISTRATION_BONUS_CREDITS) {
+    return 0;
+  }
+  return parsed;
 }
 
 export async function loginUser(input: LoginUserInput): Promise<LoginSession> {
@@ -154,6 +187,7 @@ export async function ensureBootstrapAdmin(): Promise<AppUser | undefined> {
     id: randomUUID(),
     username: parseUsername(username),
     passwordHash: await hashPassword(password),
+    nickname: null,
     role: "admin",
     status: "active",
     credits: 0,
@@ -180,6 +214,89 @@ export function getUserById(userId: string): AppUser | undefined {
 
 export function listUsers(): AppUser[] {
   return db.select().from(users).orderBy(asc(users.createdAt)).all().map(toAppUser);
+}
+
+const MAX_NICKNAME_LENGTH = 32;
+
+export function updateUserNickname(userId: string, nickname: string | null): AppUser {
+  const trimmed = typeof nickname === "string" ? nickname.trim() : null;
+  if (trimmed !== null && trimmed.length > MAX_NICKNAME_LENGTH) {
+    throw new Error(`昵称不能超过 ${MAX_NICKNAME_LENGTH} 个字符。`);
+  }
+
+  const updatedAt = new Date().toISOString();
+  const result = db
+    .update(users)
+    .set({ nickname: trimmed && trimmed.length > 0 ? trimmed : null, updatedAt })
+    .where(eq(users.id, userId))
+    .run();
+  if (result.changes === 0) {
+    throw new Error("用户不存在。");
+  }
+
+  const row = getUserRowById(userId);
+  if (!row) {
+    throw new Error("用户不存在。");
+  }
+  return toAppUser(row);
+}
+
+export async function changeUserPassword(userId: string, oldPassword: string, newPassword: string): Promise<void> {
+  assertUsablePassword(newPassword);
+
+  const row = getUserRowById(userId);
+  if (!row) {
+    throw new Error("用户不存在。");
+  }
+  if (!(await verifyPassword(oldPassword, row.passwordHash))) {
+    throw new Error("旧密码不正确。");
+  }
+
+  const updatedAt = new Date().toISOString();
+  const newHash = await hashPassword(newPassword);
+  db.transaction((tx) => {
+    tx.update(users).set({ passwordHash: newHash, updatedAt }).where(eq(users.id, userId)).run();
+    tx.delete(sessions).where(eq(sessions.userId, userId)).run();
+  });
+}
+
+export async function adminResetUserPassword(userId: string, newPassword: string): Promise<void> {
+  assertUsablePassword(newPassword);
+
+  const row = getUserRowById(userId);
+  if (!row) {
+    throw new Error("用户不存在。");
+  }
+
+  const updatedAt = new Date().toISOString();
+  const newHash = await hashPassword(newPassword);
+  db.transaction((tx) => {
+    tx.update(users).set({ passwordHash: newHash, updatedAt }).where(eq(users.id, userId)).run();
+    tx.delete(sessions).where(eq(sessions.userId, userId)).run();
+  });
+}
+
+export function setUserStatus(userId: string, status: "active" | "disabled"): AppUser {
+  const updatedAt = new Date().toISOString();
+  const result = db.update(users).set({ status, updatedAt }).where(eq(users.id, userId)).run();
+  if (result.changes === 0) {
+    throw new Error("用户不存在。");
+  }
+  if (status === "disabled") {
+    db.delete(sessions).where(eq(sessions.userId, userId)).run();
+  }
+  const row = getUserRowById(userId);
+  if (!row) {
+    throw new Error("用户不存在。");
+  }
+  return toAppUser(row);
+}
+
+export function deleteUserById(userId: string): void {
+  const result = db.delete(users).where(eq(users.id, userId)).run();
+  if (result.changes === 0) {
+    throw new Error("用户不存在。");
+  }
 }
 
 function parseUsername(value: string): string {
@@ -243,6 +360,7 @@ function toAppUser(row: typeof users.$inferSelect): AppUser {
   return {
     id: row.id,
     username: row.username,
+    nickname: row.nickname ?? null,
     role: row.role === "admin" ? "admin" : "user",
     status: row.status === "disabled" ? "disabled" : "active",
     credits: row.credits,

@@ -1,5 +1,6 @@
 export {
   CUSTOM_SIZE_PRESET_ID,
+  DEFAULT_CREDIT_COSTS,
   GENERATION_COUNTS,
   IMAGE_MODEL,
   IMAGE_QUALITIES,
@@ -11,6 +12,8 @@ export {
   SIZE_PRESETS,
   STYLE_PRESETS,
   composePrompt,
+  creditCostForSize,
+  resolutionTierForSize,
   sizeToApiValue,
   validateImageSize,
   validateSceneImageSize
@@ -27,6 +30,10 @@ export type {
   CodexDevicePollStatus,
   CodexDeviceStartResponse,
   CodexLogoutResponse,
+  CreateLocalProfileRequest,
+  CreditCostConfig,
+  CreditTransactionEntry,
+  CreditTransactionsResponse,
   EditImageRequest,
   GenerateImageRequest,
   GeneratedAsset,
@@ -43,8 +50,11 @@ export type {
   ImageSize,
   ImageSizePresetId,
   ImageSizeValidationResult,
+  LocalOpenAIProfile,
   LocalOpenAIProviderConfigView,
   MaskedSecret,
+  ProviderModelListResponse,
+  ProviderTestResult,
   OutputFormat,
   OutputStatus,
   ProjectState,
@@ -64,5 +74,6 @@ export type {
   StorageConfigResponse,
   StorageTestResult,
   StylePresetId,
+  UpdateLocalProfileRequest,
   ValidationResult
 } from "@gpt-image-canvas/shared";

@@ -295,6 +295,91 @@ test("authenticated users can load their own project and gallery", async () => {
   assert.equal(galleryResponse.status, 200);
 });
 
+test("registration bonus credits are applied when configured", async () => {
+  const { registerUser } = await import("../src/auth-service.js");
+  process.env.REGISTRATION_BONUS_CREDITS = "5";
+  try {
+    const user = await registerUser({
+      username: `bonus-${Date.now()}`,
+      password: "user-password"
+    });
+    assert.equal(user.credits, 5);
+  } finally {
+    process.env.REGISTRATION_BONUS_CREDITS = "";
+  }
+});
+
+test("registration is rejected when ALLOW_REGISTRATION=false", async () => {
+  const { app } = await import("../src/index.js");
+  process.env.ALLOW_REGISTRATION = "false";
+  try {
+    const response = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: `closed-${Date.now()}`, password: "user-password" })
+    });
+    assert.equal(response.status, 403);
+    const body = (await response.json()) as { error?: { code?: string } };
+    assert.equal(body.error?.code, "registration_disabled");
+  } finally {
+    process.env.ALLOW_REGISTRATION = "";
+  }
+});
+
+test("config endpoint exposes allowRegistration flag", async () => {
+  const { app } = await import("../src/index.js");
+  process.env.ALLOW_REGISTRATION = "false";
+  try {
+    const response = await app.request("/api/config");
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { allowRegistration?: boolean };
+    assert.equal(body.allowRegistration, false);
+  } finally {
+    process.env.ALLOW_REGISTRATION = "";
+  }
+});
+
+test("auth rate limiting blocks repeated failed logins from same IP", async () => {
+  const { app } = await import("../src/index.js");
+  const { authRateLimitTesting } = await import("../src/auth-rate-limit.js");
+  authRateLimitTesting.reset();
+  const previousTrust = process.env.TRUST_PROXY_HEADERS;
+  process.env.TRUST_PROXY_HEADERS = "true";
+
+  try {
+    const ip = "203.0.113.42";
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const response = await app.request("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": ip
+        },
+        body: JSON.stringify({ username: `nobody-${attempt}`, password: "wrong-password-12345" })
+      });
+      assert.equal(response.status, 401);
+    }
+
+    const blocked = await app.request("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-forwarded-for": ip
+      },
+      body: JSON.stringify({ username: "nobody-final", password: "wrong-password-12345" })
+    });
+    assert.equal(blocked.status, 429);
+    assert.ok(blocked.headers.get("retry-after"));
+  } finally {
+    if (previousTrust === undefined) {
+      delete process.env.TRUST_PROXY_HEADERS;
+    } else {
+      process.env.TRUST_PROXY_HEADERS = previousTrust;
+    }
+    authRateLimitTesting.reset();
+  }
+});
+
 test("admin credit API grants credits and rejects non-admin users", async () => {
   const { app } = await import("../src/index.js");
   const { ensureBootstrapAdmin, loginUser } = await import("../src/auth-service.js");

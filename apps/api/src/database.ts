@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { ensureRuntimeStorage, runtimePaths, sqliteConfig } from "./runtime.js";
 import * as schema from "./schema.js";
+
+const crypto = { randomUUID };
 
 ensureRuntimeStorage();
 
@@ -119,6 +122,53 @@ CREATE TABLE IF NOT EXISTS provider_configs (
   local_base_url TEXT,
   local_model TEXT,
   local_timeout_ms INTEGER,
+  active_profile_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redeem_codes (
+  id TEXT PRIMARY KEY NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  credits INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL,
+  uses_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT,
+  note TEXT,
+  admin_id TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redeem_code_uses (
+  id TEXT PRIMARY KEY NOT NULL,
+  code_id TEXT NOT NULL REFERENCES redeem_codes(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credits INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS error_logs (
+  id TEXT PRIMARY KEY NOT NULL,
+  path TEXT NOT NULL,
+  method TEXT NOT NULL,
+  status INTEGER,
+  code TEXT,
+  message TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS error_logs_created_at_idx ON error_logs(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS redeem_code_uses_unique_user ON redeem_code_uses(code_id, user_id);
+
+CREATE TABLE IF NOT EXISTS provider_local_profiles (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  api_key TEXT NOT NULL,
+  base_url TEXT,
+  model TEXT,
+  timeout_ms INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -188,6 +238,7 @@ CREATE INDEX IF NOT EXISTS credit_transactions_user_id_idx ON credit_transaction
 CREATE INDEX IF NOT EXISTS credit_transactions_created_at_idx ON credit_transactions(created_at);
 `);
 
+ensureColumn("users", "nickname", "nickname TEXT");
 ensureColumn("projects", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");
 ensureColumn("assets", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
@@ -213,10 +264,12 @@ ensureColumn("provider_configs", "local_api_key", "local_api_key TEXT");
 ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
+ensureColumn("provider_configs", "active_profile_id", "active_profile_id TEXT");
 ensureColumn("generation_records", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 
 backfillGenerationReferenceAssets();
 ensureProviderConfigRow();
+migrateLegacyLocalProvider();
 
 export const db = drizzle(sqlite, { schema });
 
@@ -260,4 +313,31 @@ function ensureProviderConfigRow(): void {
        VALUES (?, ?, ?, ?)`
     )
     .run("active", JSON.stringify(["env-openai", "local-openai", "codex"]), now, now);
+}
+
+function migrateLegacyLocalProvider(): void {
+  const row = sqlite
+    .prepare(`SELECT local_api_key, local_base_url, local_model, local_timeout_ms, active_profile_id FROM provider_configs WHERE id = ?`)
+    .get("active") as
+    | { local_api_key: string | null; local_base_url: string | null; local_model: string | null; local_timeout_ms: number | null; active_profile_id: string | null }
+    | undefined;
+
+  if (!row?.local_api_key || row.active_profile_id) {
+    return;
+  }
+
+  const profileCount = sqlite.prepare(`SELECT COUNT(*) AS count FROM provider_local_profiles`).get() as { count: number };
+  if (profileCount.count > 0) {
+    return;
+  }
+
+  const profileId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  sqlite
+    .prepare(
+      `INSERT INTO provider_local_profiles (id, name, api_key, base_url, model, timeout_ms, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(profileId, "默认", row.local_api_key, row.local_base_url, row.local_model, row.local_timeout_ms, now, now);
+  sqlite.prepare(`UPDATE provider_configs SET active_profile_id = ?, updated_at = ? WHERE id = ?`).run(profileId, now, "active");
 }

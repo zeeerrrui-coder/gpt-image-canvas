@@ -47,8 +47,10 @@ import {
   GenerationPlaceholderShapeUtil,
   type GenerationPlaceholderShape
 } from "./GenerationPlaceholderShape";
+import { AccountSettingsDialog } from "./AccountSettingsDialog";
 import { AdminPage } from "./AdminPage";
 import { AuthPage } from "./AuthPage";
+import { CreditHistoryDialog } from "./CreditHistoryDialog";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import {
   CUSTOM_SIZE_PRESET_ID,
@@ -1552,6 +1554,8 @@ function TopNavigation({
   currentUser,
   onLogout,
   onOpenProviderConfig,
+  onOpenAccountSettings,
+  onOpenCreditHistory,
   route,
   onNavigate,
   onPreloadGallery
@@ -1559,11 +1563,40 @@ function TopNavigation({
   currentUser: AppUser;
   onLogout: () => void;
   onOpenProviderConfig: () => void;
+  onOpenAccountSettings: () => void;
+  onOpenCreditHistory: () => void;
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
   onPreloadGallery: () => void;
 }) {
   const { t } = useI18n();
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const accountChipDisplayName = currentUser.nickname?.trim() || currentUser.username;
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) {
+      return;
+    }
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) {
+        setIsAccountMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsAccountMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isAccountMenuOpen]);
 
   return (
     <header className="top-navigation">
@@ -1624,10 +1657,58 @@ function TopNavigation({
               </a>
             ) : null}
           </nav>
-          <div className="account-chip" title={`当前用户：${currentUser.username}`}>
-            <UserCircle2 className="size-4" aria-hidden="true" />
-            <span>{currentUser.username}</span>
-            <strong>{currentUser.credits} 积分</strong>
+          <div className="account-chip-wrap" ref={accountMenuRef}>
+            <button
+              type="button"
+              className="account-chip account-chip--button"
+              title={`当前用户：${currentUser.username}`}
+              data-testid="account-chip"
+              aria-haspopup="menu"
+              aria-expanded={isAccountMenuOpen}
+              onClick={() => setIsAccountMenuOpen((open) => !open)}
+            >
+              <UserCircle2 className="size-4" aria-hidden="true" />
+              <span>{accountChipDisplayName}</span>
+              <strong>{currentUser.credits} 积分</strong>
+            </button>
+            {isAccountMenuOpen ? (
+              <div className="account-menu" role="menu">
+                <button
+                  type="button"
+                  className="account-menu__item"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAccountMenuOpen(false);
+                    onOpenAccountSettings();
+                  }}
+                >
+                  账号设置
+                </button>
+                <button
+                  type="button"
+                  className="account-menu__item"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAccountMenuOpen(false);
+                    onOpenCreditHistory();
+                  }}
+                >
+                  积分明细
+                </button>
+                <button
+                  type="button"
+                  className="account-menu__item account-menu__item--danger"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAccountMenuOpen(false);
+                    onLogout();
+                  }}
+                >
+                  <LogOut className="size-4" aria-hidden="true" />
+                  退出登录
+                </button>
+              </div>
+            ) : null}
           </div>
           {currentUser.role === "admin" ? (
             <button
@@ -1642,10 +1723,6 @@ function TopNavigation({
               <span>{t("navSettings")}</span>
             </button>
           ) : null}
-          <button className="top-navigation__settings" type="button" onClick={onLogout}>
-            <LogOut className="size-4" aria-hidden="true" />
-            <span>退出</span>
-          </button>
         </div>
       </div>
     </header>
@@ -1863,6 +1940,8 @@ export function App() {
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
   const [isProviderConfigDialogOpen, setIsProviderConfigDialogOpen] = useState(false);
+  const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
+  const [isCreditHistoryOpen, setIsCreditHistoryOpen] = useState(false);
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -2899,6 +2978,44 @@ export function App() {
     setGenerationMessage(t("generationDownloadOpened"));
   }
 
+  function importGalleryImageToCanvas(item: GalleryImageItem): void {
+    const editor = editorRef.current;
+    if (!editor) {
+      setGenerationError(t("generationCanvasNotReady"));
+      navigateToRoute("canvas");
+      return;
+    }
+
+    navigateToRoute("canvas");
+
+    const viewportBounds = editor.getViewportPageBounds();
+    const centerX = viewportBounds.x + viewportBounds.width / 2;
+    const centerY = viewportBounds.y + viewportBounds.height / 2;
+    const targetWidth = item.size.width;
+    const targetHeight = item.size.height;
+    const scale = Math.min(1, 800 / Math.max(targetWidth, targetHeight));
+    const placedWidth = targetWidth * scale;
+    const placedHeight = targetHeight * scale;
+    const placement: GenerationPlaceholderPlacement = {
+      id: createTldrawShapeId(),
+      x: centerX - placedWidth / 2,
+      y: centerY - placedHeight / 2,
+      width: placedWidth,
+      height: placedHeight,
+      targetWidth,
+      targetHeight
+    };
+
+    const asset = createImageAsset(item.asset);
+    const shape = createImageShape(item.asset, placement, item.prompt);
+    editor.run(() => {
+      editor.createAssets([asset]);
+      editor.createShapes([shape]);
+    });
+    editor.select(shape.id);
+    setGenerationMessage(t("galleryImportedMessage", { count: 1 }));
+  }
+
   function reuseGalleryImage(item: GalleryImageItem): void {
     const nextPresetId = coerceStylePresetId(item.presetId);
     const nextSizePresetId = sizePresetIdForSize(item.size.width, item.size.height);
@@ -3016,8 +3133,25 @@ export function App() {
         onLogout={() => void logoutApp()}
         onNavigate={navigateToRoute}
         onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
+        onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+        onOpenCreditHistory={() => setIsCreditHistoryOpen(true)}
         onPreloadGallery={preloadGalleryPage}
       />
+      {isAccountSettingsOpen ? (
+        <AccountSettingsDialog
+          currentUser={currentUser}
+          onClose={() => setIsAccountSettingsOpen(false)}
+          onProfileUpdated={(user) => setCurrentUser(user)}
+          onPasswordChanged={() => {
+            setIsAccountSettingsOpen(false);
+            void logoutApp();
+          }}
+          onRedeemed={(user) => setCurrentUser(user)}
+        />
+      ) : null}
+      {isCreditHistoryOpen ? (
+        <CreditHistoryDialog onClose={() => setIsCreditHistoryOpen(false)} />
+      ) : null}
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
@@ -3851,7 +3985,7 @@ export function App() {
             </main>
           }
         >
-          <LazyGalleryPage onDeleted={removeGalleryOutputFromHistory} onReuse={reuseGalleryImage} />
+          <LazyGalleryPage onDeleted={removeGalleryOutputFromHistory} onReuse={reuseGalleryImage} onImport={importGalleryImageToCanvas} />
         </Suspense>
       ) : null}
     </div>

@@ -1,7 +1,7 @@
 import { ImageIcon, Loader2, LogIn, UserPlus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import type { AppUser, AuthUserResponse } from "@gpt-image-canvas/shared";
+import type { AppConfig, AppUser, AuthUserResponse } from "@gpt-image-canvas/shared";
 
 interface AuthPageProps {
   onAuthenticated: (user: AppUser) => void;
@@ -15,6 +15,29 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [allowRegistration, setAllowRegistration] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch("/api/config", { signal: controller.signal });
+        if (!response.ok) {
+          return;
+        }
+        const config = (await response.json()) as AppConfig;
+        if (typeof config.allowRegistration === "boolean") {
+          setAllowRegistration(config.allowRegistration);
+          if (!config.allowRegistration) {
+            setMode("login");
+          }
+        }
+      } catch {
+        // network error: keep default (allow registration)
+      }
+    })();
+    return () => controller.abort();
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -58,14 +81,18 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
           </div>
         </div>
 
-        <div className="auth-tabs" role="tablist" aria-label="账号入口">
-          <button className="auth-tab" data-active={isLogin} type="button" onClick={() => setMode("login")}>
-            登录
-          </button>
-          <button className="auth-tab" data-active={!isLogin} type="button" onClick={() => setMode("register")}>
-            注册
-          </button>
-        </div>
+        {allowRegistration ? (
+          <div className="auth-tabs" role="tablist" aria-label="账号入口">
+            <button className="auth-tab" data-active={isLogin} type="button" onClick={() => setMode("login")}>
+              登录
+            </button>
+            <button className="auth-tab" data-active={!isLogin} type="button" onClick={() => setMode("register")}>
+              注册
+            </button>
+          </div>
+        ) : (
+          <p className="auth-closed-note">当前不开放注册，请联系管理员获取账号。</p>
+        )}
 
         <form className="auth-form" onSubmit={(event) => void submit(event)}>
           <label>

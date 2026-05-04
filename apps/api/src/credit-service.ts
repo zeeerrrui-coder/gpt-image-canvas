@@ -20,6 +20,7 @@ export interface DeductGenerationCreditsInput {
 export interface ReserveGenerationCreditsInput {
   userId: string;
   requestedCount: number;
+  creditPerImage?: number;
 }
 
 export interface RefundGenerationCreditsInput {
@@ -71,6 +72,7 @@ export function grantUserCredits(input: GrantUserCreditsInput): AppUser {
     return {
       id: user.id,
       username: user.username,
+      nickname: user.nickname ?? null,
       role: user.role === "admin" ? "admin" : "user",
       status: user.status === "disabled" ? "disabled" : "active",
       credits: nextCredits,
@@ -92,7 +94,9 @@ export function assertUserHasCredits(userId: string, requestedCount: number): vo
 }
 
 export function reserveGenerationCredits(input: ReserveGenerationCreditsInput): AppUser {
-  const amount = parseRequestedCount(input.requestedCount);
+  const count = parseRequestedCount(input.requestedCount);
+  const perImage = parsePositiveInteger(input.creditPerImage ?? 1);
+  const amount = count * perImage;
   return db.transaction((tx) => {
     const user = tx.select().from(users).where(eq(users.id, input.userId)).get();
     if (!user) {
@@ -112,6 +116,7 @@ export function reserveGenerationCredits(input: ReserveGenerationCreditsInput): 
         type: "generation_reserve",
         amount: -amount,
         balanceAfter: nextCredits,
+        note: perImage > 1 ? `${count} 张 × ${perImage} 分` : null,
         createdAt: updatedAt
       })
       .run();
@@ -219,6 +224,13 @@ function parseRequestedCount(value: number): number {
   return value;
 }
 
+function parsePositiveInteger(value: number): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new CreditError("invalid_request", "积分倍率必须是正整数。", 400);
+  }
+  return value;
+}
+
 function parseSuccessfulOutputCount(value: number): number {
   if (!Number.isInteger(value) || value < 0) {
     throw new CreditError("invalid_request", "成功生成数量必须是非负整数。", 400);
@@ -237,6 +249,7 @@ function toAppUser(row: typeof users.$inferSelect): AppUser {
   return {
     id: row.id,
     username: row.username,
+    nickname: row.nickname ?? null,
     role: row.role === "admin" ? "admin" : "user",
     status: row.status === "disabled" ? "disabled" : "active",
     credits: row.credits,

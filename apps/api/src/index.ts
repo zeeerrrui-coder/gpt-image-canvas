@@ -7,15 +7,28 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
 import {
+  adminResetUserPassword,
   authenticateSessionToken,
+  changeUserPassword,
+  deleteUserById,
   ensureBootstrapAdmin,
   listUsers,
   loginUser,
   logoutSessionToken,
   registerUser,
+  setUserStatus,
   SESSION_DURATION_SECONDS,
+  updateUserNickname,
   type AppUser
 } from "./auth-service.js";
+import { listCreditTransactions } from "./credit-history-service.js";
+import { createRedeemCode, deleteRedeemCode, listRedeemCodes, redeemCode } from "./redeem-code-service.js";
+import { getAdminStats, listErrorLogs, recordErrorLog } from "./admin-stats-service.js";
+import {
+  checkAuthRateLimit,
+  clearAuthFailures,
+  recordAuthFailure
+} from "./auth-rate-limit.js";
 import {
   CreditError,
   grantUserCredits,
@@ -29,6 +42,7 @@ import {
   startCodexDeviceLogin
 } from "./codex-auth.js";
 import {
+  DEFAULT_CREDIT_COSTS,
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   MAX_REFERENCE_IMAGES,
@@ -37,8 +51,10 @@ import {
   SIZE_PRESETS,
   STYLE_PRESETS,
   composePrompt,
+  creditCostForSize,
   validateSceneImageSize,
   type AppConfig,
+  type CreditCostConfig,
   type GenerationCount,
   type GenerationRecord,
   type ImageQuality,
@@ -67,11 +83,22 @@ import {
   runTextToImageGeneration
 } from "./image-generation.js";
 import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
-import { getProviderConfig, isProviderSourceOrder, saveProviderConfig } from "./provider-config.js";
+import {
+  createLocalProfile,
+  deleteLocalProfile,
+  getLocalProfileById,
+  getProviderConfig,
+  isProviderSourceOrder,
+  saveProviderConfig,
+  setActiveLocalProfile,
+  updateLocalProfile
+} from "./provider-config.js";
+import { listLocalProfileModels, testLocalProfileConnection } from "./provider-test-service.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
 const MAX_PROJECT_SNAPSHOT_BYTES = 100 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES = 110 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 120;
 const SESSION_COOKIE_NAME = "gic_session";
 
@@ -87,7 +114,23 @@ void ensureBootstrapAdmin().catch((error) => {
 });
 
 app.onError((error, c) => {
-  console.error(error);
+  const message = error instanceof Error && error.message ? error.message : "Internal server error.";
+  const code = error instanceof Error ? error.name : "internal_error";
+  console.error(`${code}: ${message}`);
+
+  void getCurrentUser(c)
+    .catch(() => undefined)
+    .then((user) => {
+      recordErrorLog({
+        path: c.req.path,
+        method: c.req.method,
+        status: 500,
+        code,
+        message,
+        userId: user?.id ?? null
+      });
+    });
+
   return c.json(
     {
       error: {
@@ -114,16 +157,40 @@ app.get("/api/config", (c) => {
     stylePresets: STYLE_PRESETS,
     qualities: IMAGE_QUALITIES,
     outputFormats: OUTPUT_FORMATS,
-    counts: GENERATION_COUNTS
+    counts: GENERATION_COUNTS,
+    allowRegistration: isRegistrationAllowed(),
+    creditCosts: getCreditCostConfig()
   };
 
   return c.json(config);
 });
 
+function getCreditCostConfig(): CreditCostConfig {
+  return {
+    cost1K: parsePositiveEnvInt(process.env.CREDIT_COST_1K, DEFAULT_CREDIT_COSTS.cost1K),
+    cost2K: parsePositiveEnvInt(process.env.CREDIT_COST_2K, DEFAULT_CREDIT_COSTS.cost2K),
+    cost4K: parsePositiveEnvInt(process.env.CREDIT_COST_4K, DEFAULT_CREDIT_COSTS.cost4K)
+  };
+}
+
+function parsePositiveEnvInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value?.trim() ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 app.post("/api/auth/register", async (c) => {
+  const limit = checkAuthRateLimit(c);
+  if (!limit.allowed) {
+    return rateLimitedJson(c, limit.retryAfterSeconds);
+  }
+
+  if (!isRegistrationAllowed()) {
+    return c.json(errorResponse("registration_disabled", "当前不开放注册，请联系管理员。"), 403);
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseCredentialsPayload(payload.value);
@@ -135,18 +202,25 @@ app.post("/api/auth/register", async (c) => {
     await registerUser(parsed.value);
     const session = await loginUser(parsed.value);
     setSessionCookie(c, session.token, session.expiresAt);
+    clearAuthFailures(c);
     return c.json({ user: session.user });
   } catch (error) {
+    recordAuthFailure(c);
     return c.json(errorResponse("auth_error", errorToMessage(error)), 400);
   }
 });
 
 app.post("/api/auth/login", async (c) => {
+  const limit = checkAuthRateLimit(c);
+  if (!limit.allowed) {
+    return rateLimitedJson(c, limit.retryAfterSeconds);
+  }
+
   await ensureBootstrapAdmin();
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseCredentialsPayload(payload.value);
@@ -157,8 +231,10 @@ app.post("/api/auth/login", async (c) => {
   try {
     const session = await loginUser(parsed.value);
     setSessionCookie(c, session.token, session.expiresAt);
+    clearAuthFailures(c);
     return c.json({ user: session.user });
   } catch (error) {
+    recordAuthFailure(c);
     return c.json(errorResponse("auth_error", errorToMessage(error)), 401);
   }
 });
@@ -173,6 +249,161 @@ app.post("/api/auth/logout", (c) => {
 
 app.get("/api/auth/me", async (c) => c.json({ user: (await getCurrentUser(c)) ?? null }));
 
+app.patch("/api/auth/profile", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  const parsed = parseProfileUpdatePayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    const updated = updateUserNickname(user.user.id, parsed.value.nickname);
+    return c.json({ user: updated });
+  } catch (error) {
+    return c.json(errorResponse("profile_update_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/auth/password", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  const parsed = parsePasswordChangePayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    await changeUserPassword(user.user.id, parsed.value.oldPassword, parsed.value.newPassword);
+    deleteCookie(c, SESSION_COOKIE_NAME, { path: "/" });
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(errorResponse("password_change_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/auth/redeem", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  if (!isRecord(payload.value) || typeof payload.value.code !== "string") {
+    return c.json(errorResponse("invalid_request", "请输入兑换码。"), 400);
+  }
+
+  try {
+    const result = redeemCode({ code: payload.value.code, userId: user.user.id });
+    return c.json({ user: result.user, credits: result.credits });
+  } catch (error) {
+    return c.json(errorResponse("redeem_error", errorToMessage(error)), 400);
+  }
+});
+
+app.get("/api/admin/redeem-codes", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+  return c.json({ codes: listRedeemCodes() });
+});
+
+app.post("/api/admin/redeem-codes", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  if (!isRecord(payload.value)) {
+    return c.json(errorResponse("invalid_request", "请求内容必须是 JSON 对象。"), 400);
+  }
+
+  const credits = typeof payload.value.credits === "number" ? payload.value.credits : Number.NaN;
+  if (!Number.isInteger(credits) || credits <= 0) {
+    return c.json(errorResponse("invalid_request", "请输入正整数积分。"), 400);
+  }
+
+  const maxUses = typeof payload.value.maxUses === "number" ? payload.value.maxUses : 1;
+  const expiresAt = typeof payload.value.expiresAt === "string" ? payload.value.expiresAt : null;
+  const note = typeof payload.value.note === "string" ? payload.value.note : undefined;
+
+  try {
+    const created = createRedeemCode({ credits, maxUses, expiresAt, note, adminId: admin.user.id });
+    return c.json({ code: created });
+  } catch (error) {
+    return c.json(errorResponse("redeem_error", errorToMessage(error)), 400);
+  }
+});
+
+app.delete("/api/admin/redeem-codes/:codeId", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  try {
+    deleteRedeemCode(c.req.param("codeId"));
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(errorResponse("redeem_error", errorToMessage(error)), 400);
+  }
+});
+
+app.get("/api/auth/credit-transactions", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const page = Math.max(1, Number.parseInt(c.req.query("page") ?? "1", 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(c.req.query("pageSize") ?? "20", 10) || 20));
+  return c.json(listCreditTransactions(user.user.id, { page, pageSize }));
+});
+
+app.get("/api/admin/stats", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+  return c.json(getAdminStats());
+});
+
+app.get("/api/admin/error-logs", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+  const page = Math.max(1, Number.parseInt(c.req.query("page") ?? "1", 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(c.req.query("pageSize") ?? "30", 10) || 30));
+  return c.json(listErrorLogs({ page, pageSize }));
+});
+
 app.get("/api/admin/users", async (c) => {
   const admin = await requireAdmin(c);
   if (!admin.ok) {
@@ -184,6 +415,120 @@ app.get("/api/admin/users", async (c) => {
   });
 });
 
+app.get("/api/admin/users/:userId/credit-transactions", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const page = Math.max(1, Number.parseInt(c.req.query("page") ?? "1", 10) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number.parseInt(c.req.query("pageSize") ?? "20", 10) || 20));
+  return c.json(listCreditTransactions(c.req.param("userId"), { page, pageSize }));
+});
+
+app.post("/api/admin/users/:userId/status", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  if (!isRecord(payload.value) || (payload.value.status !== "active" && payload.value.status !== "disabled")) {
+    return c.json(errorResponse("invalid_request", "状态必须是 active 或 disabled。"), 400);
+  }
+
+  const targetUserId = c.req.param("userId");
+  if (targetUserId === admin.user.id && payload.value.status === "disabled") {
+    return c.json(errorResponse("invalid_request", "不能禁用自己的账号。"), 400);
+  }
+
+  try {
+    return c.json({ user: setUserStatus(targetUserId, payload.value.status) });
+  } catch (error) {
+    return c.json(errorResponse("user_status_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/admin/users/:userId/password-reset", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  if (!isRecord(payload.value) || typeof payload.value.password !== "string") {
+    return c.json(errorResponse("invalid_request", "请输入新密码。"), 400);
+  }
+
+  try {
+    await adminResetUserPassword(c.req.param("userId"), payload.value.password);
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(errorResponse("password_reset_error", errorToMessage(error)), 400);
+  }
+});
+
+app.delete("/api/admin/users/:userId", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const targetUserId = c.req.param("userId");
+  if (targetUserId === admin.user.id) {
+    return c.json(errorResponse("invalid_request", "不能删除自己的账号。"), 400);
+  }
+
+  try {
+    deleteUserById(targetUserId);
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(errorResponse("user_delete_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/admin/users/credits/batch", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  const parsed = parseBatchCreditPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  const results: Array<{ userId: string; ok: boolean; user?: AppUser; error?: string }> = [];
+  for (const userId of parsed.value.userIds) {
+    try {
+      const user = grantUserCredits({
+        userId,
+        amount: parsed.value.amount,
+        adminId: admin.user.id,
+        note: parsed.value.note
+      });
+      results.push({ userId, ok: true, user });
+    } catch (error) {
+      results.push({ userId, ok: false, error: errorToMessage(error) });
+    }
+  }
+
+  return c.json({ results });
+});
+
 app.post("/api/admin/users/:userId/credits", async (c) => {
   const admin = await requireAdmin(c);
   if (!admin.ok) {
@@ -192,7 +537,7 @@ app.post("/api/admin/users/:userId/credits", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseCreditAdjustmentPayload(payload.value);
@@ -240,7 +585,7 @@ app.put("/api/provider-config", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseProviderConfigPayload(payload.value);
@@ -252,6 +597,124 @@ app.put("/api/provider-config", async (c) => {
     return c.json(saveProviderConfig(parsed.value));
   } catch (error) {
     return c.json(errorResponse("provider_config_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/provider-config/profiles", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  const parsed = parseCreateProfilePayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json({ profile: createLocalProfile(parsed.value) });
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
+  }
+});
+
+app.patch("/api/provider-config/profiles/:profileId", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
+  }
+
+  const parsed = parseUpdateProfilePayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json({ profile: updateLocalProfile(c.req.param("profileId"), parsed.value) });
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
+  }
+});
+
+app.delete("/api/provider-config/profiles/:profileId", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  try {
+    return c.json(deleteLocalProfile(c.req.param("profileId")));
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/provider-config/profiles/:profileId/activate", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  try {
+    return c.json(setActiveLocalProfile(c.req.param("profileId")));
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/provider-config/profiles/active/clear", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  try {
+    return c.json(setActiveLocalProfile(null));
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/provider-config/profiles/:profileId/test", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const profile = getLocalProfileById(c.req.param("profileId"));
+  if (!profile) {
+    return c.json(errorResponse("not_found", "Local OpenAI profile not found."), 404);
+  }
+
+  return c.json(await testLocalProfileConnection(profile));
+});
+
+app.get("/api/provider-config/profiles/:profileId/models", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const profile = getLocalProfileById(c.req.param("profileId"));
+  if (!profile) {
+    return c.json(errorResponse("not_found", "Local OpenAI profile not found."), 404);
+  }
+
+  try {
+    const models = await listLocalProfileModels(profile);
+    return c.json({ models });
+  } catch (error) {
+    return c.json(errorResponse("provider_profile_error", errorToMessage(error)), 400);
   }
 });
 
@@ -280,7 +743,7 @@ app.post("/api/auth/codex/device/poll", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseCodexPollPayload(payload.value);
@@ -359,7 +822,7 @@ app.put("/api/storage/config", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseStorageConfigPayload(payload.value);
@@ -382,7 +845,7 @@ app.post("/api/storage/config/test", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseStorageConfigPayload(payload.value);
@@ -408,7 +871,7 @@ app.get("/api/assets/:id/preview", async (c) => {
     return c.json(errorResponse("not_found", "Asset not found."), 404);
   }
 
-  const preview = await readStoredAssetPreview(c.req.param("id"), parsedWidth.width);
+  const preview = await readStoredAssetPreview(c.req.param("id"), parsedWidth.width, user.user.id);
   if (!preview) {
     return c.json(errorResponse("not_found", "Asset not found."), 404);
   }
@@ -488,7 +951,7 @@ app.put("/api/project", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     logProjectSaveRejected(payload.error, c.req.raw);
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseProjectPayload(payload.value);
@@ -508,7 +971,7 @@ app.post("/api/images/generate", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseGeneratePayload(payload.value);
@@ -516,27 +979,30 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  let reservedCount = 0;
+  const creditPerImage = creditCostForSize(parsed.value.size, getCreditCostConfig());
+  let reservedAmount = 0;
   try {
     reserveGenerationCredits({
       userId: user.user.id,
-      requestedCount: parsed.value.count
+      requestedCount: parsed.value.count,
+      creditPerImage
     });
-    reservedCount = parsed.value.count;
+    reservedAmount = parsed.value.count * creditPerImage;
     const provider = await createConfiguredImageProvider(c.req.raw.signal);
     const result = await runTextToImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
     const successfulCount = successfulOutputCount(result.record);
     const updatedUser = refundGenerationCredits({
       userId: user.user.id,
       generationId: result.record.id,
-      amount: parsed.value.count - successfulCount
+      amount: (parsed.value.count - successfulCount) * creditPerImage
     });
+    reservedAmount = 0;
     return c.json({ ...result, user: updatedUser });
   } catch (error) {
-    if (reservedCount > 0) {
+    if (reservedAmount > 0) {
       refundGenerationCredits({
         userId: user.user.id,
-        amount: reservedCount
+        amount: reservedAmount
       });
     }
     if (error instanceof CreditError) {
@@ -558,7 +1024,7 @@ app.post("/api/images/edit", async (c) => {
 
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    return c.json(payload.error, 400);
+    return c.json(payload.error, (payload.status ?? 400) as 400 | 413);
   }
 
   const parsed = parseEditPayload(payload.value, user.user.id);
@@ -572,6 +1038,7 @@ app.post("/api/images/edit", async (c) => {
       userId: user.user.id,
       requestedCount: parsed.value.count
     });
+    const editCreditPerImage = creditCostForSize(parsed.value.size, getCreditCostConfig());
     reservedCount = parsed.value.count;
     const provider = await createConfiguredImageProvider(c.req.raw.signal);
     const result = await runReferenceImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
@@ -579,8 +1046,9 @@ app.post("/api/images/edit", async (c) => {
     const updatedUser = refundGenerationCredits({
       userId: user.user.id,
       generationId: result.record.id,
-      amount: parsed.value.count - successfulCount
+      amount: (parsed.value.count - successfulCount) * editCreditPerImage
     });
+    reservedCount = 0;
     return c.json({ ...result, user: updatedUser });
   } catch (error) {
     if (reservedCount > 0) {
@@ -634,6 +1102,30 @@ function errorJson(code: string, message: string, status: number): Response {
   });
 }
 
+function rateLimitedJson(_c: Context, retryAfterSeconds: number | undefined): Response {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+  if (retryAfterSeconds && retryAfterSeconds > 0) {
+    headers["Retry-After"] = String(retryAfterSeconds);
+  }
+  return new Response(
+    JSON.stringify(errorResponse("rate_limited", "登录尝试过于频繁，请稍后再试。")),
+    {
+      status: 429,
+      headers
+    }
+  );
+}
+
+function isRegistrationAllowed(): boolean {
+  const value = process.env.ALLOW_REGISTRATION?.trim().toLowerCase();
+  if (value === undefined || value === "") {
+    return true;
+  }
+  return value !== "false" && value !== "0" && value !== "no" && value !== "off";
+}
+
 interface CredentialsPayload {
   username: string;
   password: string;
@@ -655,8 +1147,26 @@ function setSessionCookie(c: Context, token: string, expiresAt: string): void {
     httpOnly: true,
     maxAge: SESSION_DURATION_SECONDS,
     path: "/",
-    sameSite: "Lax"
+    sameSite: "Lax",
+    secure: isSecureRequest(c)
   });
+}
+
+function isSecureRequest(c: Context): boolean {
+  const url = new URL(c.req.url);
+  if (url.protocol === "https:") {
+    return true;
+  }
+
+  const forwardedProto = c.req.header("x-forwarded-proto");
+  if (forwardedProto) {
+    const first = forwardedProto.split(",")[0]?.trim().toLowerCase();
+    if (first === "https") {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function getSessionToken(c: Context): string | undefined {
@@ -729,6 +1239,103 @@ function parseCredentialsPayload(input: unknown): ParseResult<CredentialsPayload
   };
 }
 
+function parseProfileUpdatePayload(input: unknown): ParseResult<{ nickname: string | null }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请求内容必须是 JSON 对象。")
+    };
+  }
+
+  if (input.nickname === undefined || input.nickname === null) {
+    return { ok: true, value: { nickname: null } };
+  }
+
+  if (typeof input.nickname !== "string") {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "昵称必须是字符串。")
+    };
+  }
+
+  return { ok: true, value: { nickname: input.nickname } };
+}
+
+function parsePasswordChangePayload(input: unknown): ParseResult<{ oldPassword: string; newPassword: string }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请求内容必须是 JSON 对象。")
+    };
+  }
+
+  if (typeof input.oldPassword !== "string" || input.oldPassword.length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请输入旧密码。")
+    };
+  }
+
+  if (typeof input.newPassword !== "string" || input.newPassword.length < 8) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "新密码至少需要 8 位。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      oldPassword: input.oldPassword,
+      newPassword: input.newPassword
+    }
+  };
+}
+
+function parseBatchCreditPayload(input: unknown): ParseResult<{ userIds: string[]; amount: number; note?: string }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请求内容必须是 JSON 对象。")
+    };
+  }
+
+  if (!Array.isArray(input.userIds) || input.userIds.length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请选择至少一个用户。")
+    };
+  }
+
+  const userIds: string[] = [];
+  for (const userId of input.userIds) {
+    if (typeof userId !== "string" || userId.trim().length === 0) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_request", "用户 ID 必须是字符串。")
+      };
+    }
+    userIds.push(userId);
+  }
+
+  const amount = typeof input.amount === "number" ? input.amount : Number.NaN;
+  if (!Number.isInteger(amount) || amount === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "积分变动必须是非零整数。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      userIds,
+      amount,
+      note: typeof input.note === "string" ? input.note : undefined
+    }
+  };
+}
+
 function parseCreditAdjustmentPayload(input: unknown): ParseResult<{ amount: number; note?: string }> {
   if (!isRecord(input)) {
     return {
@@ -773,6 +1380,7 @@ type ParseResult<T> =
   | {
       ok: false;
       error: ErrorResponseBody;
+      status?: number;
     };
 
 function logProjectSaveRejected(error: ErrorResponseBody, request: Request): void {
@@ -1099,6 +1707,94 @@ function parseProviderSourceOrderPayload(input: unknown): ParseResult<ProviderSo
   };
 }
 
+function parseCreateProfilePayload(input: unknown): ParseResult<{ name: string; apiKey: string; baseUrl?: string; model?: string; timeoutMs?: number }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Profile payload must be a JSON object.")
+    };
+  }
+  if (typeof input.name !== "string" || input.name.trim().length === 0) {
+    return { ok: false, error: errorResponse("invalid_provider_config", "请填写配置名称。") };
+  }
+  if (typeof input.apiKey !== "string" || input.apiKey.trim().length === 0) {
+    return { ok: false, error: errorResponse("invalid_provider_config", "请填写 API Key。") };
+  }
+
+  const result: { name: string; apiKey: string; baseUrl?: string; model?: string; timeoutMs?: number } = {
+    name: input.name,
+    apiKey: input.apiKey
+  };
+
+  if (Object.hasOwn(input, "baseUrl")) {
+    if (typeof input.baseUrl !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "Base URL 必须是字符串。") };
+    }
+    result.baseUrl = input.baseUrl;
+  }
+  if (Object.hasOwn(input, "model")) {
+    if (typeof input.model !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "模型必须是字符串。") };
+    }
+    result.model = input.model;
+  }
+  if (Object.hasOwn(input, "timeoutMs")) {
+    const timeoutMs = parsePositiveIntegerValue(input.timeoutMs);
+    if (!timeoutMs) {
+      return { ok: false, error: errorResponse("invalid_provider_config", "超时必须是正整数。") };
+    }
+    result.timeoutMs = timeoutMs;
+  }
+
+  return { ok: true, value: result };
+}
+
+function parseUpdateProfilePayload(input: unknown): ParseResult<{ name?: string; apiKey?: string; preserveApiKey?: boolean; baseUrl?: string; model?: string; timeoutMs?: number }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_provider_config", "Profile payload must be a JSON object.")
+    };
+  }
+
+  const result: { name?: string; apiKey?: string; preserveApiKey?: boolean; baseUrl?: string; model?: string; timeoutMs?: number } = {};
+  if (Object.hasOwn(input, "name")) {
+    if (typeof input.name !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "名称必须是字符串。") };
+    }
+    result.name = input.name;
+  }
+  if (Object.hasOwn(input, "apiKey")) {
+    if (typeof input.apiKey !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "API Key 必须是字符串。") };
+    }
+    result.apiKey = input.apiKey;
+  }
+  if (input.preserveApiKey === true) {
+    result.preserveApiKey = true;
+  }
+  if (Object.hasOwn(input, "baseUrl")) {
+    if (typeof input.baseUrl !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "Base URL 必须是字符串。") };
+    }
+    result.baseUrl = input.baseUrl;
+  }
+  if (Object.hasOwn(input, "model")) {
+    if (typeof input.model !== "string") {
+      return { ok: false, error: errorResponse("invalid_provider_config", "模型必须是字符串。") };
+    }
+    result.model = input.model;
+  }
+  if (Object.hasOwn(input, "timeoutMs")) {
+    const timeoutMs = parsePositiveIntegerValue(input.timeoutMs);
+    if (!timeoutMs) {
+      return { ok: false, error: errorResponse("invalid_provider_config", "超时必须是正整数。") };
+    }
+    result.timeoutMs = timeoutMs;
+  }
+  return { ok: true, value: result };
+}
+
 function parseLocalOpenAIProviderConfig(input: unknown): ParseResult<SaveLocalOpenAIProviderConfig> {
   if (!isRecord(input)) {
     return {
@@ -1389,10 +2085,26 @@ async function readJson(request: Request): Promise<ParseResult<unknown>> {
     };
   }
 
+  const declaredLength = parseContentLengthHeader(request.headers.get("content-length"));
+  if (declaredLength !== undefined && declaredLength > MAX_REQUEST_BODY_BYTES) {
+    return {
+      ok: false,
+      error: errorResponse("payload_too_large", `请求体不能超过 ${formatBytes(MAX_REQUEST_BODY_BYTES)}。`),
+      status: 413
+    };
+  }
+
   let bodyText: string;
   try {
-    bodyText = await request.text();
-  } catch {
+    bodyText = await readBodyTextWithLimit(request, MAX_REQUEST_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      return {
+        ok: false,
+        error: errorResponse("payload_too_large", `请求体不能超过 ${formatBytes(MAX_REQUEST_BODY_BYTES)}。`),
+        status: 413
+      };
+    }
     return {
       ok: false,
       error: errorResponse("invalid_request_body", "请求体读取失败，请重试。")
@@ -1417,6 +2129,66 @@ async function readJson(request: Request): Promise<ParseResult<unknown>> {
       error: errorResponse("invalid_json", "请求体必须是有效的 JSON。")
     };
   }
+}
+
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super("Payload too large.");
+    this.name = "PayloadTooLargeError";
+  }
+}
+
+function parseContentLengthHeader(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+async function readBodyTextWithLimit(request: Request, maxBytes: number): Promise<string> {
+  const body = request.body;
+  if (!body) {
+    const bodyText = await request.text();
+    if (Buffer.byteLength(bodyText, "utf8") > maxBytes) {
+      throw new PayloadTooLargeError();
+    }
+    return bodyText;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore cancel errors
+        }
+        throw new PayloadTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore release errors
+    }
+  }
+
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))).toString("utf8");
 }
 
 function isJsonContentType(contentType: string): boolean {

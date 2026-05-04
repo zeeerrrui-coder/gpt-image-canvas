@@ -1,8 +1,10 @@
-import { eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { asc, eq } from "drizzle-orm";
 import {
   IMAGE_MODEL,
   PROVIDER_SOURCE_IDS,
   type CodexAuthSessionView,
+  type LocalOpenAIProfile,
   type LocalOpenAIProviderConfigView,
   type MaskedSecret,
   type ProviderConfigResponse,
@@ -10,7 +12,6 @@ import {
   type ProviderSourceSummary,
   type ProviderSourceView,
   type RuntimeImageProvider,
-  type SaveLocalOpenAIProviderConfig,
   type SaveProviderConfigRequest
 } from "./contracts.js";
 import { db } from "./database.js";
@@ -20,7 +21,7 @@ import {
   parseOpenAIImageTimeoutMs,
   type OpenAIImageProviderConfig
 } from "./image-provider.js";
-import { codexOAuthTokens, providerConfigs } from "./schema.js";
+import { codexOAuthTokens, providerConfigs, providerLocalProfiles } from "./schema.js";
 
 const ACTIVE_PROVIDER_CONFIG_ID = "active";
 const CODEX_TOKEN_ROW_ID = "default";
@@ -28,26 +29,52 @@ const CODEX_TOKEN_ROW_ID = "default";
 export const DEFAULT_PROVIDER_SOURCE_ORDER: ProviderSourceId[] = ["env-openai", "local-openai", "codex"];
 
 type ProviderConfigRow = typeof providerConfigs.$inferSelect;
+type ProviderLocalProfileRow = typeof providerLocalProfiles.$inferSelect;
 type CodexTokenRow = typeof codexOAuthTokens.$inferSelect;
 
-interface ResolvedLocalConfig {
-  localApiKey: string | null;
-  localBaseUrl: string | null;
-  localModel: string | null;
-  localTimeoutMs: number | null;
+export interface CreateLocalProfileInput {
+  name: string;
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+export interface UpdateLocalProfileInput {
+  name?: string;
+  apiKey?: string;
+  preserveApiKey?: boolean;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+export interface LocalOpenAIProfileRecord {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string | null;
+  model: string | null;
+  timeoutMs: number | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export function getProviderConfig(): ProviderConfigResponse {
   const row = getProviderConfigRow();
   const sourceOrder = readSavedSourceOrder(row?.sourceOrderJson);
-  const sourcesById = new Map(providerSources(row).map((source) => [source.id, source]));
+  const localProfiles = listLocalProfiles();
+  const activeProfile = getActiveLocalProfile(row);
+  const sourcesById = new Map(providerSources(activeProfile).map((source) => [source.id, source]));
   const sources = sourceOrder.map((sourceId) => sourcesById.get(sourceId)).filter(isDefined);
   const activeSource = sources.find((source) => source.available);
 
   return {
     sourceOrder,
     sources,
-    localOpenAI: localOpenAIConfigView(row),
+    localOpenAI: localOpenAIConfigView(activeProfile),
+    localProfiles,
+    activeProfileId: activeProfile?.id ?? null,
     activeSource: activeSource ? providerSourceSummary(activeSource) : undefined
   };
 }
@@ -59,32 +86,35 @@ export function saveProviderConfig(input: SaveProviderConfigRequest): ProviderCo
 
   const now = new Date().toISOString();
   const existing = getProviderConfigRow();
-  const local = resolveLocalConfigForSave(input.localOpenAI, existing);
-  const row: ProviderConfigRow = {
-    id: ACTIVE_PROVIDER_CONFIG_ID,
-    sourceOrderJson: JSON.stringify(input.sourceOrder),
-    localApiKey: local.localApiKey,
-    localBaseUrl: local.localBaseUrl,
-    localModel: local.localModel,
-    localTimeoutMs: local.localTimeoutMs,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now
-  };
+  const activeProfileId = resolveActiveProfileIdForSave(input.localOpenAI, existing?.activeProfileId ?? null);
 
-  db.insert(providerConfigs)
-    .values(row)
-    .onConflictDoUpdate({
-      target: providerConfigs.id,
-      set: {
-        sourceOrderJson: row.sourceOrderJson,
-        localApiKey: row.localApiKey,
-        localBaseUrl: row.localBaseUrl,
-        localModel: row.localModel,
-        localTimeoutMs: row.localTimeoutMs,
-        updatedAt: row.updatedAt
-      }
-    })
-    .run();
+  db.transaction((tx) => {
+    if (activeProfileId && !tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, activeProfileId)).get()) {
+      throw new Error("Local OpenAI profile not found.");
+    }
+
+    tx.insert(providerConfigs)
+      .values({
+        id: ACTIVE_PROVIDER_CONFIG_ID,
+        sourceOrderJson: JSON.stringify(input.sourceOrder),
+        localApiKey: existing?.localApiKey ?? null,
+        localBaseUrl: existing?.localBaseUrl ?? null,
+        localModel: existing?.localModel ?? null,
+        localTimeoutMs: existing?.localTimeoutMs ?? null,
+        activeProfileId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: providerConfigs.id,
+        set: {
+          sourceOrderJson: JSON.stringify(input.sourceOrder),
+          activeProfileId,
+          updatedAt: now
+        }
+      })
+      .run();
+  });
 
   return getProviderConfig();
 }
@@ -109,18 +139,180 @@ export function getEnvironmentOpenAIImageProviderConfig(): OpenAIImageProviderCo
 }
 
 export function getLocalOpenAIImageProviderConfig(): OpenAIImageProviderConfig | undefined {
-  const row = getProviderConfigRow();
-  const apiKey = trimToUndefined(row?.localApiKey);
-  if (!apiKey) {
-    return undefined;
-  }
+  return localProfileToOpenAIConfig(getActiveLocalProfile());
+}
 
-  return {
-    apiKey,
-    baseURL: trimToUndefined(row?.localBaseUrl),
-    model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-    timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
-  };
+export function listLocalProfiles(): LocalOpenAIProfile[] {
+  return db
+    .select()
+    .from(providerLocalProfiles)
+    .orderBy(asc(providerLocalProfiles.createdAt))
+    .all()
+    .map(localProfileView);
+}
+
+export function createLocalProfile(input: CreateLocalProfileInput): LocalOpenAIProfile {
+  const name = requiredProfileName(input.name);
+  const apiKey = requiredApiKey(input.apiKey);
+  const now = new Date().toISOString();
+  const profileId = randomUUID();
+  let created: ProviderLocalProfileRow | undefined;
+
+  db.transaction((tx) => {
+    const duplicate = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.name, name)).get();
+    if (duplicate) {
+      throw new Error("Local OpenAI profile name already exists.");
+    }
+
+    const hasAnyProfile = Boolean(tx.select().from(providerLocalProfiles).limit(1).get());
+    tx.insert(providerLocalProfiles)
+      .values({
+        id: profileId,
+        name,
+        apiKey,
+        baseUrl: trimToNull(input.baseUrl),
+        model: trimToNull(input.model),
+        timeoutMs: optionalPositiveInteger(input.timeoutMs, "Local OpenAI timeout"),
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+
+    if (!hasAnyProfile) {
+      const configRow = tx.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
+      tx.insert(providerConfigs)
+        .values({
+          id: ACTIVE_PROVIDER_CONFIG_ID,
+          sourceOrderJson: configRow?.sourceOrderJson ?? JSON.stringify(DEFAULT_PROVIDER_SOURCE_ORDER),
+          localApiKey: null,
+          localBaseUrl: null,
+          localModel: null,
+          localTimeoutMs: null,
+          activeProfileId: profileId,
+          createdAt: configRow?.createdAt ?? now,
+          updatedAt: now
+        })
+        .onConflictDoUpdate({
+          target: providerConfigs.id,
+          set: {
+            activeProfileId: profileId,
+            updatedAt: now
+          }
+        })
+        .run();
+    }
+
+    created = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get();
+  });
+
+  if (!created) {
+    throw new Error("Local OpenAI profile was not created.");
+  }
+  return localProfileView(created);
+}
+
+export function updateLocalProfile(id: string, input: UpdateLocalProfileInput): LocalOpenAIProfile {
+  const profileId = requiredProfileId(id);
+  const now = new Date().toISOString();
+  let updated: ProviderLocalProfileRow | undefined;
+
+  db.transaction((tx) => {
+    const existing = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get();
+    if (!existing) {
+      throw new Error("Local OpenAI profile not found.");
+    }
+
+    const name = Object.hasOwn(input, "name") ? requiredProfileName(input.name) : existing.name;
+    const duplicate = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.name, name)).get();
+    if (duplicate && duplicate.id !== profileId) {
+      throw new Error("Local OpenAI profile name already exists.");
+    }
+
+    tx.update(providerLocalProfiles)
+      .set({
+        name,
+        apiKey: resolveUpdatedApiKey(input, existing),
+        baseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : existing.baseUrl,
+        model: Object.hasOwn(input, "model") ? trimToNull(input.model) : existing.model,
+        timeoutMs: Object.hasOwn(input, "timeoutMs")
+          ? optionalPositiveInteger(input.timeoutMs, "Local OpenAI timeout")
+          : existing.timeoutMs,
+        updatedAt: now
+      })
+      .where(eq(providerLocalProfiles.id, profileId))
+      .run();
+
+    updated = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get();
+  });
+
+  if (!updated) {
+    throw new Error("Local OpenAI profile was not updated.");
+  }
+  return localProfileView(updated);
+}
+
+export function deleteLocalProfile(id: string): ProviderConfigResponse {
+  const profileId = requiredProfileId(id);
+  const now = new Date().toISOString();
+
+  db.transaction((tx) => {
+    const existing = tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get();
+    if (!existing) {
+      throw new Error("Local OpenAI profile not found.");
+    }
+
+    tx.delete(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).run();
+
+    const configRow = tx.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
+    if (configRow?.activeProfileId === profileId) {
+      tx.update(providerConfigs)
+        .set({ activeProfileId: null, updatedAt: now })
+        .where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID))
+        .run();
+    }
+  });
+
+  return getProviderConfig();
+}
+
+export function setActiveLocalProfile(id: string | null): ProviderConfigResponse {
+  const profileId = optionalProfileId(id);
+  const now = new Date().toISOString();
+
+  db.transaction((tx) => {
+    if (profileId && !tx.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get()) {
+      throw new Error("Local OpenAI profile not found.");
+    }
+
+    const configRow = tx.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
+    tx.insert(providerConfigs)
+      .values({
+        id: ACTIVE_PROVIDER_CONFIG_ID,
+        sourceOrderJson: configRow?.sourceOrderJson ?? JSON.stringify(DEFAULT_PROVIDER_SOURCE_ORDER),
+        localApiKey: configRow?.localApiKey ?? null,
+        localBaseUrl: configRow?.localBaseUrl ?? null,
+        localModel: configRow?.localModel ?? null,
+        localTimeoutMs: configRow?.localTimeoutMs ?? null,
+        activeProfileId: profileId,
+        createdAt: configRow?.createdAt ?? now,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: providerConfigs.id,
+        set: {
+          activeProfileId: profileId,
+          updatedAt: now
+        }
+      })
+      .run();
+  });
+
+  return getProviderConfig();
+}
+
+export function getLocalProfileById(id: string): LocalOpenAIProfileRecord | undefined {
+  const profile = getLocalProfileRow(id);
+  return profile ? localProfileRecord(profile) : undefined;
 }
 
 export function isProviderSourceOrder(value: unknown): value is ProviderSourceId[] {
@@ -135,9 +327,18 @@ function getProviderConfigRow(): ProviderConfigRow | undefined {
   return db.select().from(providerConfigs).where(eq(providerConfigs.id, ACTIVE_PROVIDER_CONFIG_ID)).get();
 }
 
-function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView[] {
+function getActiveLocalProfile(row = getProviderConfigRow()): ProviderLocalProfileRow | undefined {
+  return row?.activeProfileId ? getLocalProfileRow(row.activeProfileId) : undefined;
+}
+
+function getLocalProfileRow(id: string): ProviderLocalProfileRow | undefined {
+  const profileId = trimToUndefined(id);
+  return profileId ? db.select().from(providerLocalProfiles).where(eq(providerLocalProfiles.id, profileId)).get() : undefined;
+}
+
+function providerSources(activeProfile: ProviderLocalProfileRow | undefined): ProviderSourceView[] {
   const envConfig = getEnvironmentOpenAIImageProviderConfig();
-  const localConfig = getLocalOpenAIImageProviderConfig();
+  const localConfig = localProfileToOpenAIConfig(activeProfile);
   const codex = codexSessionView(getCodexTokenRow());
 
   return [
@@ -161,11 +362,11 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
       available: Boolean(localConfig),
       status: localConfig ? "available" : "missing_api_key",
       details: {
-        baseUrl: row?.localBaseUrl ?? "",
-        model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-        timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+        baseUrl: activeProfile?.baseUrl ?? "",
+        model: trimToUndefined(activeProfile?.model) ?? IMAGE_MODEL,
+        timeoutMs: validTimeoutMs(activeProfile?.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
       },
-      secret: maskedSecret(row?.localApiKey)
+      secret: maskedSecret(activeProfile?.apiKey)
     },
     {
       id: "codex",
@@ -183,12 +384,51 @@ function providerSources(row: ProviderConfigRow | undefined): ProviderSourceView
   ];
 }
 
-function localOpenAIConfigView(row: ProviderConfigRow | undefined): LocalOpenAIProviderConfigView {
+function localOpenAIConfigView(profile: ProviderLocalProfileRow | undefined): LocalOpenAIProviderConfigView {
   return {
-    apiKey: maskedSecret(row?.localApiKey),
-    baseUrl: row?.localBaseUrl ?? "",
-    model: trimToUndefined(row?.localModel) ?? IMAGE_MODEL,
-    timeoutMs: validTimeoutMs(row?.localTimeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+    apiKey: maskedSecret(profile?.apiKey),
+    baseUrl: profile?.baseUrl ?? "",
+    model: trimToUndefined(profile?.model) ?? IMAGE_MODEL,
+    timeoutMs: validTimeoutMs(profile?.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
+  };
+}
+
+function localProfileView(profile: ProviderLocalProfileRow): LocalOpenAIProfile {
+  return {
+    id: profile.id,
+    name: profile.name,
+    apiKey: maskedSecret(profile.apiKey),
+    baseUrl: profile.baseUrl ?? "",
+    model: trimToUndefined(profile.model) ?? IMAGE_MODEL,
+    timeoutMs: validTimeoutMs(profile.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt
+  };
+}
+
+function localProfileRecord(profile: ProviderLocalProfileRow): LocalOpenAIProfileRecord {
+  return {
+    id: profile.id,
+    name: profile.name,
+    apiKey: profile.apiKey,
+    baseUrl: profile.baseUrl,
+    model: profile.model,
+    timeoutMs: profile.timeoutMs,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt
+  };
+}
+
+function localProfileToOpenAIConfig(profile: ProviderLocalProfileRow | undefined): OpenAIImageProviderConfig | undefined {
+  if (!profile?.apiKey.trim()) {
+    return undefined;
+  }
+
+  return {
+    apiKey: profile.apiKey.trim(),
+    baseURL: trimToUndefined(profile.baseUrl),
+    model: trimToUndefined(profile.model) ?? IMAGE_MODEL,
+    timeoutMs: validTimeoutMs(profile.timeoutMs) ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS
   };
 }
 
@@ -211,43 +451,72 @@ function runtimeProviderForSource(sourceId: ProviderSourceId): RuntimeImageProvi
   return "openai";
 }
 
-function resolveLocalConfigForSave(
-  input: SaveLocalOpenAIProviderConfig | undefined,
-  existing: ProviderConfigRow | undefined
-): ResolvedLocalConfig {
-  if (!input) {
-    return {
-      localApiKey: existing?.localApiKey ?? null,
-      localBaseUrl: existing?.localBaseUrl ?? null,
-      localModel: existing?.localModel ?? null,
-      localTimeoutMs: existing?.localTimeoutMs ?? null
-    };
+function resolveActiveProfileIdForSave(
+  input: SaveProviderConfigRequest["localOpenAI"],
+  existingActiveProfileId: string | null
+): string | null {
+  if (input === undefined) {
+    return existingActiveProfileId;
   }
-
-  return {
-    localApiKey: resolveLocalApiKey(input, existing),
-    localBaseUrl: Object.hasOwn(input, "baseUrl") ? trimToNull(input.baseUrl) : (existing?.localBaseUrl ?? null),
-    localModel: Object.hasOwn(input, "model") ? trimToNull(input.model) : (existing?.localModel ?? null),
-    localTimeoutMs: Object.hasOwn(input, "timeoutMs")
-      ? requiredPositiveInteger(input.timeoutMs, "Local OpenAI timeout")
-      : (existing?.localTimeoutMs ?? null)
-  };
-}
-
-function resolveLocalApiKey(input: SaveLocalOpenAIProviderConfig, existing: ProviderConfigRow | undefined): string | null {
-  if (typeof input.apiKey === "string") {
-    const trimmed = input.apiKey.trim();
-    if (trimmed) {
-      return trimmed;
+  if (input === null || typeof input === "string") {
+    return optionalProfileId(input);
+  }
+  if (Object.hasOwn(input, "activeProfileId")) {
+    const value = input.activeProfileId;
+    if (value !== null && value !== undefined && typeof value !== "string") {
+      throw new Error("Local OpenAI active profile id must be a string or null.");
     }
-
-    return input.preserveApiKey === true ? (existing?.localApiKey ?? null) : null;
+    return optionalProfileId(value ?? null);
   }
 
-  return existing?.localApiKey ?? null;
+  return existingActiveProfileId;
 }
 
-function requiredPositiveInteger(value: number | undefined, label: string): number | null {
+function requiredProfileName(value: string | undefined): string {
+  const name = trimToUndefined(value);
+  if (!name) {
+    throw new Error("Local OpenAI profile name is required.");
+  }
+  return name;
+}
+
+function requiredApiKey(value: string | undefined): string {
+  const apiKey = trimToUndefined(value);
+  if (!apiKey) {
+    throw new Error("Local OpenAI API key is required.");
+  }
+  return apiKey;
+}
+
+function resolveUpdatedApiKey(input: UpdateLocalProfileInput, existing: ProviderLocalProfileRow): string {
+  if (!Object.hasOwn(input, "apiKey")) {
+    return existing.apiKey;
+  }
+
+  const apiKey = trimToUndefined(input.apiKey);
+  if (apiKey) {
+    return apiKey;
+  }
+  if (input.preserveApiKey === true) {
+    return existing.apiKey;
+  }
+
+  throw new Error("Local OpenAI API key is required.");
+}
+
+function requiredProfileId(value: string): string {
+  const profileId = trimToUndefined(value);
+  if (!profileId) {
+    throw new Error("Local OpenAI profile id is required.");
+  }
+  return profileId;
+}
+
+function optionalProfileId(value: string | null | undefined): string | null {
+  return trimToUndefined(value) ?? null;
+}
+
+function optionalPositiveInteger(value: number | undefined, label: string): number | null {
   if (value === undefined) {
     return null;
   }

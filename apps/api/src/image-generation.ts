@@ -148,49 +148,75 @@ async function ensureReferenceAssetIds(input: EditImageProviderInput, userId: st
     return input.referenceAssetIds;
   }
 
-  const savedReferenceAssets = await Promise.all(input.referenceImages.map((referenceImage) => saveReferenceImageInput(referenceImage, userId)));
-  return savedReferenceAssets.map((asset) => asset.id);
-}
+  const parsedReferences = input.referenceImages.map((referenceImage) => prepareReferenceImage(referenceImage));
+  const sized: Array<{ assetId: string; mimeType: string; bytes: Buffer; width: number; height: number; fileName: string; relativePath: string; filePath: string }> = [];
+  for (const parsed of parsedReferences) {
+    const imageSize = await readImageSize(parsed.bytes);
+    if (!imageSize) {
+      throw new ProviderError("unsupported_provider_behavior", "Reference image dimensions could not be read.", 400);
+    }
 
-async function saveReferenceImageInput(input: ReferenceImageInput, userId: string): Promise<GeneratedAsset> {
-  const parsed = referenceDataUrlToBytes(input);
-  const imageSize = await readImageSize(parsed.bytes);
-  if (!imageSize) {
-    throw new ProviderError("unsupported_provider_behavior", "Reference image dimensions could not be read.", 400);
+    const assetId = randomUUID();
+    const extension = extensionForMimeType(parsed.mimeType);
+    const fileName = `${assetId}.${extension}`;
+    const relativePath = `assets/${fileName}`;
+    const filePath = resolve(runtimePaths.dataDir, relativePath);
+
+    sized.push({ assetId, mimeType: parsed.mimeType, bytes: parsed.bytes, width: imageSize.width, height: imageSize.height, fileName, relativePath, filePath });
   }
 
-  const assetId = randomUUID();
-  const extension = extensionForMimeType(parsed.mimeType);
-  const fileName = `${assetId}.${extension}`;
-  const relativePath = `assets/${fileName}`;
-  const filePath = resolve(runtimePaths.dataDir, relativePath);
+  const writtenFiles: string[] = [];
+  try {
+    for (const item of sized) {
+      await localAssetStorage.putObject({ filePath: item.filePath, bytes: item.bytes });
+      writtenFiles.push(item.filePath);
+    }
+  } catch (error) {
+    await Promise.all(
+      writtenFiles.map((filePath) => localAssetStorage.deleteObject({ filePath }).catch(() => undefined))
+    );
+    throw error;
+  }
+
   const createdAt = new Date().toISOString();
+  try {
+    db.transaction((tx) => {
+      for (const item of sized) {
+        tx.insert(assets)
+          .values({
+            id: item.assetId,
+            userId,
+            fileName: item.fileName,
+            relativePath: item.relativePath,
+            mimeType: item.mimeType,
+            width: item.width,
+            height: item.height,
+            createdAt
+          })
+          .run();
+      }
+    });
+  } catch (error) {
+    await Promise.all(
+      writtenFiles.map((filePath) => localAssetStorage.deleteObject({ filePath }).catch(() => undefined))
+    );
+    throw error;
+  }
 
-  await localAssetStorage.putObject({ filePath, bytes: parsed.bytes });
-  db.insert(assets)
-    .values({
-      id: assetId,
-      userId,
-      fileName,
-      relativePath,
-      mimeType: parsed.mimeType,
-      width: imageSize.width,
-      height: imageSize.height,
-      createdAt
-    })
-    .run();
-
-  return {
-    id: assetId,
-    url: `/api/assets/${assetId}`,
-    fileName,
-    mimeType: parsed.mimeType,
-    width: imageSize.width,
-    height: imageSize.height
-  };
+  return sized.map((item) => item.assetId);
 }
 
+function prepareReferenceImage(input: ReferenceImageInput): { bytes: Buffer; mimeType: string } {
+  return referenceDataUrlToBytes(input);
+}
+
+const MAX_REFERENCE_BASE64_LENGTH = Math.ceil((MAX_REFERENCE_IMAGE_BYTES * 4) / 3) + 4;
+
 function referenceDataUrlToBytes(input: ReferenceImageInput): { bytes: Buffer; mimeType: string } {
+  if (typeof input.dataUrl !== "string" || input.dataUrl.length > MAX_REFERENCE_BASE64_LENGTH + 256) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
+  }
+
   const match = /^data:([^;,]+);base64,(.+)$/u.exec(input.dataUrl);
   if (!match) {
     throw new ProviderError("unsupported_provider_behavior", "参考图像格式不受支持。", 400);
@@ -199,6 +225,10 @@ function referenceDataUrlToBytes(input: ReferenceImageInput): { bytes: Buffer; m
   const mimeType = match[1].toLowerCase();
   if (!SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
     throw new ProviderError("unsupported_provider_behavior", "参考图像必须是 PNG、JPEG 或 WebP 格式。", 400);
+  }
+
+  if (match[2].length > MAX_REFERENCE_BASE64_LENGTH) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
   }
 
   const bytes = Buffer.from(match[2], "base64");
@@ -216,12 +246,12 @@ function extensionForMimeType(mimeType: string): string {
   return mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
 }
 
-export function getStoredAssetFile(assetId: string, userId?: string): StoredAssetFile | undefined {
+export function getStoredAssetFile(assetId: string, userId: string): StoredAssetFile | undefined {
   const asset = db.select().from(assets).where(eq(assets.id, assetId)).get();
   if (!asset) {
     return undefined;
   }
-  if (userId && asset.userId !== userId) {
+  if (asset.userId !== userId) {
     return undefined;
   }
 
@@ -239,7 +269,7 @@ export function getStoredAssetFile(assetId: string, userId?: string): StoredAsse
   };
 }
 
-export async function readStoredAsset(assetId: string, userId?: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
+export async function readStoredAsset(assetId: string, userId: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
   const file = getStoredAssetFile(assetId, userId);
   if (!file) {
     return undefined;
@@ -264,7 +294,7 @@ export async function readStoredAsset(assetId: string, userId?: string): Promise
   }
 }
 
-export async function readStoredAssetMetadata(assetId: string, userId?: string): Promise<AssetMetadataResponse | undefined> {
+export async function readStoredAssetMetadata(assetId: string, userId: string): Promise<AssetMetadataResponse | undefined> {
   const asset = await readStoredAsset(assetId, userId);
   if (!asset) {
     return undefined;
@@ -439,73 +469,75 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
   const referenceAssetIds = input.referenceAssetIds ?? (input.referenceAssetId ? [input.referenceAssetId] : []);
   const primaryReferenceAssetId = referenceAssetIds[0] ?? input.referenceAssetId;
 
-  db.insert(generationRecords)
-    .values({
-      id: generationId,
-      userId: input.userId,
-      mode: input.mode,
-      prompt: input.originalPrompt,
-      effectivePrompt: input.prompt,
-      presetId: input.presetId,
-      width: input.size.width,
-      height: input.size.height,
-      quality: input.quality,
-      outputFormat: input.outputFormat,
-      count: input.count,
-      status,
-      error,
-      referenceAssetId: primaryReferenceAssetId ?? null,
-      createdAt
-    })
-    .run();
-
-  referenceAssetIds.forEach((assetId, position) => {
-    db.insert(generationReferenceAssets)
+  db.transaction((tx) => {
+    tx.insert(generationRecords)
       .values({
-        generationId,
-        assetId,
-        position,
+        id: generationId,
+        userId: input.userId,
+        mode: input.mode,
+        prompt: input.originalPrompt,
+        effectivePrompt: input.prompt,
+        presetId: input.presetId,
+        width: input.size.width,
+        height: input.size.height,
+        quality: input.quality,
+        outputFormat: input.outputFormat,
+        count: input.count,
+        status,
+        error,
+        referenceAssetId: primaryReferenceAssetId ?? null,
         createdAt
       })
       .run();
-  });
 
-  for (const output of outputs) {
-    if (output.asset) {
-      db.insert(assets)
+    referenceAssetIds.forEach((assetId, position) => {
+      tx.insert(generationReferenceAssets)
         .values({
-          id: output.asset.id,
-          userId: input.userId,
-          fileName: output.asset.fileName,
-          relativePath: `assets/${output.asset.fileName}`,
-          mimeType: output.asset.mimeType,
-          width: output.asset.width,
-          height: output.asset.height,
-          cloudProvider: output.cloudStorage?.provider ?? null,
-          cloudBucket: output.cloudStorage?.bucket ?? null,
-          cloudRegion: output.cloudStorage?.region ?? null,
-          cloudObjectKey: output.cloudStorage?.objectKey ?? null,
-          cloudStatus: output.cloudStorage?.status ?? null,
-          cloudError: output.cloudStorage?.error ?? null,
-          cloudUploadedAt: output.cloudStorage?.uploadedAt ?? null,
-          cloudEtag: output.cloudStorage?.etag ?? null,
-          cloudRequestId: output.cloudStorage?.requestId ?? null,
+          generationId,
+          assetId,
+          position,
+          createdAt
+        })
+        .run();
+    });
+
+    for (const output of outputs) {
+      if (output.asset) {
+        tx.insert(assets)
+          .values({
+            id: output.asset.id,
+            userId: input.userId,
+            fileName: output.asset.fileName,
+            relativePath: `assets/${output.asset.fileName}`,
+            mimeType: output.asset.mimeType,
+            width: output.asset.width,
+            height: output.asset.height,
+            cloudProvider: output.cloudStorage?.provider ?? null,
+            cloudBucket: output.cloudStorage?.bucket ?? null,
+            cloudRegion: output.cloudStorage?.region ?? null,
+            cloudObjectKey: output.cloudStorage?.objectKey ?? null,
+            cloudStatus: output.cloudStorage?.status ?? null,
+            cloudError: output.cloudStorage?.error ?? null,
+            cloudUploadedAt: output.cloudStorage?.uploadedAt ?? null,
+            cloudEtag: output.cloudStorage?.etag ?? null,
+            cloudRequestId: output.cloudStorage?.requestId ?? null,
+            createdAt
+          })
+          .run();
+      }
+
+      tx.insert(generationOutputs)
+        .values({
+          id: output.id,
+          generationId,
+          status: output.status,
+          assetId: output.asset?.id ?? null,
+          error: output.error ?? null,
           createdAt
         })
         .run();
     }
-
-    db.insert(generationOutputs)
-      .values({
-        id: output.id,
-        generationId,
-        status: output.status,
-        assetId: output.asset?.id ?? null,
-        error: output.error ?? null,
-        createdAt
-      })
-      .run();
-  }
+  });
 
   return {
     id: generationId,

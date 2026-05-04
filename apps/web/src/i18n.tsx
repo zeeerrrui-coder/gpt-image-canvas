@@ -299,6 +299,12 @@ const zhMessages = {
     `已向画布插入 ${inserted} 张图像，${failed} 张失败。`,
   generationInvalidResponse: "生成服务返回了无法识别的结果。",
   generationGalleryReused: "已从画廊填入生成参数。",
+  galleryImportedMessage: ({ count }: { count: number }) => `已导入 ${count} 张画廊图像到画布。`,
+  galleryActionImport: "导入到画布",
+  galleryBatchDownload: "批量下载",
+  galleryBatchClear: "清空选择",
+  galleryBatchSelected: ({ count }: { count: number }) => `已选 ${count} 张`,
+  projectExport: "导出项目",
   generationLocatePending: "已定位到生成中的任务。",
   generationLocateSucceeded: "已定位到历史图像。",
   generationMissingPromptHistory: "这条历史记录没有可复制的提示词。",
@@ -603,6 +609,12 @@ const enMessages: I18nMessages = {
   generationInsertedPartialBody: ({ inserted, failed }) => `${inserted} images inserted onto the canvas, ${failed} failed.`,
   generationInvalidResponse: "The generation service returned an unrecognized result.",
   generationGalleryReused: "Generation settings filled from Gallery.",
+  galleryImportedMessage: ({ count }) => `Imported ${count} gallery image(s) onto the canvas.`,
+  galleryActionImport: "Import to canvas",
+  galleryBatchDownload: "Batch download",
+  galleryBatchClear: "Clear selection",
+  galleryBatchSelected: ({ count }) => `${count} selected`,
+  projectExport: "Export project",
   generationLocatePending: "Located the generating task.",
   generationLocateSucceeded: "Located the history image.",
   generationMissingPromptHistory: "This history record has no prompt to copy.",
@@ -889,7 +901,7 @@ function createTranslate(locale: Locale): Translate {
 }
 
 function initialLocale(): Locale {
-  return "zh-CN";
+  return readStoredLocale() ?? "zh-CN";
 }
 
 function readStoredLocale(): Locale | undefined {

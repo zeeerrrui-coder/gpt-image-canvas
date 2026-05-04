@@ -437,6 +437,12 @@ export function ProviderConfigDialog({
 
             <section className="provider-detail-card" data-testid="provider-local-section" aria-labelledby="provider-local-title">
               <ProviderDetailHeader source={localSource} sourceId="local-openai" titleId="provider-local-title" />
+              <ProfileListPanel
+                config={config}
+                onConfigUpdated={applyProviderConfig}
+                onError={(text) => setMessage({ tone: "error", text })}
+                onSuccess={(text) => setMessage({ tone: "success", text })}
+              />
               <div className="provider-form-grid">
                 <label className="provider-field provider-field--span">
                   <span>API Key</span>
@@ -647,5 +653,230 @@ async function readProviderConfigError(response: Response, locale: Locale, t: Tr
     });
   } catch {
     return t("providerConfigRequestFailed", { status: response.status });
+  }
+}
+
+interface ProfileListPanelProps {
+  config: ProviderConfigResponse | null;
+  onConfigUpdated: (config: ProviderConfigResponse) => void;
+  onError: (message: string) => void;
+  onSuccess: (message: string) => void;
+}
+
+function ProfileListPanel({ config, onConfigUpdated, onError, onSuccess }: ProfileListPanelProps) {
+  const profiles = config?.localProfiles ?? [];
+  const activeProfileId = config?.activeProfileId ?? null;
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  async function activateProfile(profileId: string): Promise<void> {
+    setBusyId(profileId);
+    try {
+      const response = await fetch(`/api/provider-config/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+      const body = (await response.json()) as ProviderConfigResponse;
+      onConfigUpdated(body);
+      onSuccess("已切换激活配置。");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "切换失败。");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function deleteProfile(profileId: string, name: string): Promise<void> {
+    if (!window.confirm(`删除配置 "${name}"？`)) {
+      return;
+    }
+    setBusyId(profileId);
+    try {
+      const response = await fetch(`/api/provider-config/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+      const body = (await response.json()) as ProviderConfigResponse;
+      onConfigUpdated(body);
+      onSuccess("已删除配置。");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "删除失败。");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function testProfile(profileId: string): Promise<void> {
+    setBusyId(profileId);
+    try {
+      const response = await fetch(`/api/provider-config/profiles/${encodeURIComponent(profileId)}/test`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+      const body = (await response.json()) as { ok: boolean; message: string };
+      if (body.ok) {
+        onSuccess(body.message);
+      } else {
+        onError(body.message);
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "测试失败。");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="profile-list-panel">
+      <div className="profile-list-header">
+        <span>本地中转配置（点击切换激活）</span>
+        <button type="button" className="secondary-action h-8" onClick={() => setCreateOpen(true)}>
+          新增配置
+        </button>
+      </div>
+      {profiles.length === 0 ? (
+        <p className="profile-list-empty">尚未创建任何本地配置。点击"新增配置"添加第一个。</p>
+      ) : (
+        <ul className="profile-list">
+          {profiles.map((profile) => {
+            const isActive = profile.id === activeProfileId;
+            const isBusy = busyId === profile.id;
+            return (
+              <li key={profile.id} className="profile-list-item" data-active={isActive}>
+                <button
+                  type="button"
+                  className="profile-list-item__main"
+                  onClick={() => void activateProfile(profile.id)}
+                  disabled={isBusy || isActive}
+                  title={isActive ? "当前激活" : "点击激活"}
+                >
+                  <strong>{profile.name}</strong>
+                  <span>{profile.baseUrl || "默认 OpenAI 端点"}</span>
+                  <span className="profile-list-item__model">{profile.model}</span>
+                  {isActive ? <span className="profile-active-badge">已激活</span> : null}
+                </button>
+                <div className="profile-list-actions">
+                  <button type="button" className="text-action" onClick={() => void testProfile(profile.id)} disabled={isBusy}>
+                    测试连接
+                  </button>
+                  <button type="button" className="text-action text-action--danger" onClick={() => void deleteProfile(profile.id, profile.name)} disabled={isBusy}>
+                    删除
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {createOpen ? (
+        <CreateProfileDialog
+          onCancel={() => setCreateOpen(false)}
+          onCreated={(updatedConfig) => {
+            onConfigUpdated(updatedConfig);
+            onSuccess("已创建配置。");
+            setCreateOpen(false);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface CreateProfileDialogProps {
+  onCancel: () => void;
+  onCreated: (config: ProviderConfigResponse) => void;
+}
+
+function CreateProfileDialog({ onCancel, onCreated }: CreateProfileDialogProps) {
+  const [name, setName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  async function submit(): Promise<void> {
+    if (!name.trim() || !apiKey.trim()) {
+      setError("请填写配置名称和 API Key。");
+      return;
+    }
+    setIsSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/provider-config/profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          apiKey: apiKey.trim(),
+          baseUrl: baseUrl.trim() || undefined,
+          model: model.trim() || undefined
+        })
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+      const refreshed = await fetch("/api/provider-config");
+      if (!refreshed.ok) {
+        throw new Error(await readError(refreshed));
+      }
+      const body = (await refreshed.json()) as ProviderConfigResponse;
+      onCreated(body);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "创建失败。");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return createPortal(
+    <div className="dialog-backdrop" role="dialog" aria-modal="true">
+      <div className="dialog-panel">
+        <header className="dialog-header">
+          <h2>新增本地中转配置</h2>
+          <button type="button" className="dialog-close" onClick={onCancel} disabled={isSaving} aria-label="关闭">
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="dialog-form">
+          <label>
+            <span>配置名称（如"OpenRouter""国内中转 A"）</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} maxLength={32} autoFocus />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          </label>
+          <label>
+            <span>Base URL（留空使用官方 OpenAI）</span>
+            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" />
+          </label>
+          <label>
+            <span>模型（留空使用 gpt-image-2）</span>
+            <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-image-2" />
+          </label>
+          {error ? <p className="dialog-error" role="alert">{error}</p> : null}
+          <div className="dialog-actions">
+            <button type="button" className="secondary-action h-10" onClick={onCancel} disabled={isSaving}>
+              取消
+            </button>
+            <button type="button" className="primary-action h-10" onClick={() => void submit()} disabled={isSaving}>
+              {isSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+              创建
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+async function readError(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: { message?: string } };
+    return body.error?.message ?? `请求失败，状态 ${response.status}。`;
+  } catch {
+    return `请求失败，状态 ${response.status}。`;
   }
 }

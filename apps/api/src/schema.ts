@@ -5,6 +5,7 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  nickname: text("nickname"),
   role: text("role").notNull(),
   status: text("status").notNull(),
   credits: integer("credits").notNull(),
@@ -85,6 +86,50 @@ export const providerConfigs = sqliteTable("provider_configs", {
   localBaseUrl: text("local_base_url"),
   localModel: text("local_model"),
   localTimeoutMs: integer("local_timeout_ms"),
+  activeProfileId: text("active_profile_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const redeemCodes = sqliteTable("redeem_codes", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  credits: integer("credits").notNull(),
+  maxUses: integer("max_uses").notNull(),
+  usesCount: integer("uses_count").notNull(),
+  expiresAt: text("expires_at"),
+  note: text("note"),
+  adminId: text("admin_id").references(() => users.id),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const redeemCodeUses = sqliteTable("redeem_code_uses", {
+  id: text("id").primaryKey(),
+  codeId: text("code_id").notNull().references(() => redeemCodes.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  credits: integer("credits").notNull(),
+  createdAt: text("created_at").notNull()
+});
+
+export const errorLogs = sqliteTable("error_logs", {
+  id: text("id").primaryKey(),
+  path: text("path").notNull(),
+  method: text("method").notNull(),
+  status: integer("status"),
+  code: text("code"),
+  message: text("message").notNull(),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: text("created_at").notNull()
+});
+
+export const providerLocalProfiles = sqliteTable("provider_local_profiles", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  apiKey: text("api_key").notNull(),
+  baseUrl: text("base_url"),
+  model: text("model"),
+  timeoutMs: integer("timeout_ms"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });

@@ -8,6 +8,7 @@ import {
   Loader2,
   Maximize2,
   Palette,
+  Plus,
   RotateCcw,
   Ruler,
   Search,
@@ -28,6 +29,7 @@ import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "
 interface GalleryPageProps {
   onDeleted: (outputId: string) => void;
   onReuse: (item: GalleryImageItem) => void;
+  onImport: (item: GalleryImageItem) => void;
 }
 
 interface GalleryActionHandlers {
@@ -35,9 +37,10 @@ interface GalleryActionHandlers {
   onDelete: (item: GalleryImageItem) => void;
   onDownload: (item: GalleryImageItem) => void;
   onReuse: (item: GalleryImageItem) => void;
+  onImport: (item: GalleryImageItem) => void;
 }
 
-export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
+export function GalleryPage({ onDeleted, onReuse, onImport }: GalleryPageProps) {
   const { locale, t } = useI18n();
   const [items, setItems] = useState<GalleryImageItem[]>([]);
   const [query, setQuery] = useState("");
@@ -136,7 +139,8 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     onCopy: (item) => void copyPrompt(item),
     onDelete: requestDelete,
     onDownload: downloadItem,
-    onReuse
+    onReuse,
+    onImport
   };
 
   function showStatus(message: string): void {
@@ -167,6 +171,23 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   function downloadItem(item: GalleryImageItem): void {
     window.open(`/api/assets/${encodeURIComponent(item.asset.id)}/download`, "_blank", "noopener,noreferrer");
     showStatus(t("galleryOpenDownload"));
+  }
+
+  async function downloadFiltered(): Promise<void> {
+    if (filteredItems.length === 0) {
+      return;
+    }
+    showStatus(t("galleryBatchSelected", { count: filteredItems.length }));
+    for (const item of filteredItems) {
+      const link = document.createElement("a");
+      link.href = `/api/assets/${encodeURIComponent(item.asset.id)}/download`;
+      link.download = item.asset.fileName;
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   }
 
   function requestDelete(item: GalleryImageItem): void {
@@ -213,6 +234,17 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
             <strong>{items.length}</strong>
             <span>{t("galleryWorkCount")}</span>
             <span>{t("galleryWorkSort")}</span>
+            {filteredItems.length > 0 ? (
+              <button
+                type="button"
+                className="secondary-action h-8 ml-2"
+                title={t("galleryBatchDownload")}
+                onClick={() => void downloadFiltered()}
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                {t("galleryBatchDownload")}（{filteredItems.length}）
+              </button>
+            ) : null}
           </div>
           <div className="gallery-search" role="search">
             <Search className="size-4" aria-hidden="true" />
@@ -320,6 +352,7 @@ function FeaturedGalleryItem({
   onDownload,
   onOpen,
   onReuse,
+  onImport,
   onTogglePrompt
 }: {
   deleting: boolean;
@@ -378,6 +411,7 @@ function FeaturedGalleryItem({
             onDelete={onDelete}
             onDownload={onDownload}
             onReuse={onReuse}
+            onImport={onImport}
           />
         </div>
       </div>
@@ -394,6 +428,7 @@ function GalleryCard({
   onDownload,
   onOpen,
   onReuse,
+  onImport,
   onTogglePrompt
 }: {
   deleting: boolean;
@@ -446,6 +481,7 @@ function GalleryCard({
             onDelete={onDelete}
             onDownload={onDownload}
             onReuse={onReuse}
+            onImport={onImport}
           />
         </div>
       </div>
@@ -459,7 +495,8 @@ function GalleryIconActions({
   onCopy,
   onDelete,
   onDownload,
-  onReuse
+  onReuse,
+  onImport
 }: {
   deleting: boolean;
   item: GalleryImageItem;
@@ -495,6 +532,15 @@ function GalleryIconActions({
         onClick={() => onReuse(item)}
       >
         <RotateCcw className="size-4" aria-hidden="true" />
+      </button>
+      <button
+        aria-label={t("galleryActionImport")}
+        className="gallery-icon-action"
+        title={t("galleryActionImport")}
+        type="button"
+        onClick={() => onImport(item)}
+      >
+        <Plus className="size-4" aria-hidden="true" />
       </button>
       <button
         aria-label={t("galleryActionDeleteImage", { excerpt })}

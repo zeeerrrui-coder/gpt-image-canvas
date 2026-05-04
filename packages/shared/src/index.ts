@@ -91,6 +91,29 @@ export function resolutionTierForSize(size: ImageSize): ResolutionTier {
   return "1K";
 }
 
+export interface CreditCostConfig {
+  cost1K: number;
+  cost2K: number;
+  cost4K: number;
+}
+
+export const DEFAULT_CREDIT_COSTS: CreditCostConfig = {
+  cost1K: 1,
+  cost2K: 2,
+  cost4K: 4
+};
+
+export function creditCostForSize(size: ImageSize, config: CreditCostConfig = DEFAULT_CREDIT_COSTS): number {
+  const tier = resolutionTierForSize(size);
+  if (tier === "4K") {
+    return Math.max(1, Math.floor(config.cost4K));
+  }
+  if (tier === "2K") {
+    return Math.max(1, Math.floor(config.cost2K));
+  }
+  return Math.max(1, Math.floor(config.cost1K));
+}
+
 export const CUSTOM_SIZE_PRESET_ID = "custom" as const;
 export type ImageSizePresetId = (typeof SIZE_PRESETS)[number]["id"] | typeof CUSTOM_SIZE_PRESET_ID;
 
@@ -295,11 +318,29 @@ export type UserStatus = "active" | "disabled";
 export interface AppUser {
   id: string;
   username: string;
+  nickname: string | null;
   role: UserRole;
   status: UserStatus;
   credits: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CreditTransactionEntry {
+  id: string;
+  type: string;
+  amount: number;
+  balanceAfter: number;
+  generationId: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface CreditTransactionsResponse {
+  items: CreditTransactionEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface AuthUserResponse {
@@ -352,6 +393,8 @@ export interface AppConfig {
   qualities: ImageQuality[];
   outputFormats: OutputFormat[];
   counts: readonly GenerationCount[];
+  allowRegistration: boolean;
+  creditCosts: CreditCostConfig;
 }
 
 export type RuntimeImageProvider = "openai" | "codex" | "none";
@@ -408,14 +451,28 @@ export interface LocalOpenAIProviderConfigView {
   timeoutMs: number;
 }
 
+export interface LocalOpenAIProfile {
+  id: string;
+  name: string;
+  apiKey: MaskedSecret;
+  baseUrl: string;
+  model: string;
+  timeoutMs: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProviderConfigResponse {
   sourceOrder: ProviderSourceId[];
   sources: ProviderSourceView[];
   localOpenAI: LocalOpenAIProviderConfigView;
+  localProfiles: LocalOpenAIProfile[];
+  activeProfileId: string | null;
   activeSource?: ProviderSourceSummary;
 }
 
 export interface SaveLocalOpenAIProviderConfig {
+  activeProfileId?: string | null;
   apiKey?: string;
   preserveApiKey?: boolean;
   baseUrl?: string;
@@ -425,7 +482,33 @@ export interface SaveLocalOpenAIProviderConfig {
 
 export interface SaveProviderConfigRequest {
   sourceOrder: ProviderSourceId[];
-  localOpenAI?: SaveLocalOpenAIProviderConfig;
+  localOpenAI?: SaveLocalOpenAIProviderConfig | string | null;
+}
+
+export interface CreateLocalProfileRequest {
+  name: string;
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+export interface UpdateLocalProfileRequest {
+  name?: string;
+  apiKey?: string;
+  preserveApiKey?: boolean;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface ProviderModelListResponse {
+  models: string[];
 }
 
 export interface AuthStatusResponse {

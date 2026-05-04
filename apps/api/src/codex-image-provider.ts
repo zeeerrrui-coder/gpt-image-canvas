@@ -219,7 +219,13 @@ function createResponsesInputContent(input: ResponsesImageInput): Array<Record<s
   return content;
 }
 
+const MAX_REFERENCE_BASE64_LENGTH = Math.ceil((MAX_REFERENCE_IMAGE_BYTES * 4) / 3) + 4;
+
 function normalizeReferenceImageDataUrl(input: ReferenceImageInput): string {
+  if (typeof input.dataUrl !== "string" || input.dataUrl.length > MAX_REFERENCE_BASE64_LENGTH + 256) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
+  }
+
   const match = /^data:([^;,]+);base64,(.+)$/u.exec(input.dataUrl);
   if (!match) {
     throw new ProviderError("unsupported_provider_behavior", "参考图像格式不受支持。", 400);
@@ -228,6 +234,10 @@ function normalizeReferenceImageDataUrl(input: ReferenceImageInput): string {
   const mimeType = match[1].toLowerCase();
   if (!SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
     throw new ProviderError("unsupported_provider_behavior", "参考图像必须是 PNG、JPEG 或 WebP 格式。", 400);
+  }
+
+  if (match[2].length > MAX_REFERENCE_BASE64_LENGTH) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
   }
 
   const bytes = Buffer.from(match[2], "base64");
