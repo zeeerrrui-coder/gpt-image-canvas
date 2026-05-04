@@ -3978,39 +3978,29 @@ export function App() {
               ) : null}
 
               <div className="rounded-md border border-cyan-200 bg-cyan-50 px-3 py-3 text-xs leading-6 text-cyan-900">
-                <p className="font-semibold mb-1">这是你自己的云存储</p>
+                <p className="font-semibold">这是你自己的云存储</p>
                 <p>
-                  服务器不再帮你保存生图。每个用户在这里填自己的 COS 配置，
-                  生成图时会同时存一份到<strong>你自己的</strong>云端。这样：
+                  每个用户在这里独立配置自己的腾讯云 COS。开启后，生图时会同步上传一份到你的云端，
+                  本地磁盘清掉后画布和画廊仍然能从你云端取回。
                 </p>
-                <ul className="mt-1 ml-4 list-disc">
-                  <li>不占服务器空间，多用户互不打扰</li>
-                  <li>本地磁盘清掉后，画布/画廊还能从你云端取回</li>
-                  <li>账号数据归你自己管</li>
-                </ul>
-                <p className="mt-2 font-semibold">不开会怎样？</p>
-                <p>
-                  生图仍然能用，但所有图只存在服务器本地磁盘。服务器磁盘满了之后整站
-                  就生不了图，已有的图也可能因清理被删，<strong>建议开启</strong>。
-                </p>
-                <p className="mt-2 font-semibold">怎么开通腾讯云 COS（5 步）？</p>
-                <ol className="mt-1 ml-4 list-decimal space-y-0.5">
-                  <li>登录 <a className="underline" href="https://console.cloud.tencent.com/cos" target="_blank" rel="noreferrer">腾讯云 COS 控制台</a>，创建一个存储桶（Bucket），区域选离你近的（如 ap-shanghai）</li>
-                  <li>到 <a className="underline" href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noreferrer">访问密钥</a> 页面，新建一对 SecretId / SecretKey</li>
-                  <li>把 SecretId、SecretKey、Bucket、Region 填到下面的表格</li>
-                  <li>勾选"开启"后点保存。系统会先做一次测试上传/删除验证</li>
-                  <li>验证通过后，新生成的图就会自动同时上你云端</li>
+
+                <p className="mt-3 font-semibold">开通腾讯云 COS</p>
+                <ol className="mt-1 ml-4 list-decimal space-y-1">
+                  <li>
+                    登录 <a className="underline" href="https://console.cloud.tencent.com/cos" target="_blank" rel="noreferrer">腾讯云 COS 控制台</a>，创建一个存储桶（Bucket），区域选离你近的（例如 ap-shanghai）
+                  </li>
+                  <li>
+                    到 <a className="underline" href="https://console.cloud.tencent.com/cam/capi" target="_blank" rel="noreferrer">访问密钥</a> 页面，新建一对 SecretId / SecretKey
+                  </li>
+                  <li>把 SecretId、SecretKey、Bucket、Region 填到下面的表单</li>
+                  <li>勾选"开启"后点保存，系统会先做一次测试上传 / 删除验证</li>
+                  <li>验证通过后，新生成的图会自动同时上传到你的云端</li>
                 </ol>
-                <p className="mt-2 font-semibold">空间估算</p>
+
+                <p className="mt-3 font-semibold">空间参考</p>
                 <p>
-                  1K 单张约 1–4 MB · 2K 约 4–10 MB · 4K 可能 20–40 MB。
-                  腾讯云 COS 标准存储约 ¥0.099/GB/月，1 GB 月费几乎可忽略。
-                </p>
-                <p className="mt-2 font-semibold">能用夸克网盘 / 百度网盘吗？</p>
-                <p>
-                  <strong>不能</strong>。这些网盘的接口是私有的，只给自家客户端用，
-                  第三方应用没办法接。能接的是"对象存储"类服务：腾讯云 COS（已支持）、
-                  阿里云 OSS、七牛云、Cloudflare R2、AWS S3 等（后两类需要后续版本加 S3 兼容 adapter）。
+                  1K 单张约 1–4 MB · 2K 约 4–10 MB · 4K 约 20–40 MB。
+                  腾讯云 COS 标准存储 ¥0.099 / GB / 月，1 GB 的月费几乎可以忽略。
                 </p>
               </div>
 
