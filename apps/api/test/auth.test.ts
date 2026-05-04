@@ -95,6 +95,7 @@ test("auth routes register, expose current user, and logout", async () => {
   assert.equal(registerResponse.status, 200);
   const cookie = registerResponse.headers.get("set-cookie");
   assert.match(cookie ?? "", /gic_session=/);
+  assert.match(cookie ?? "", /Max-Age=/i);
 
   const meResponse = await app.request("/api/auth/me", {
     headers: {
@@ -152,7 +153,8 @@ test("admin user list does not include passwords, prompts, or images", async () 
   const { app } = await import("../src/index.js");
   const { ensureBootstrapAdmin, loginUser, registerUser } = await import("../src/auth-service.js");
   await ensureBootstrapAdmin();
-  await registerUser({ username: `listed-${Date.now()}`, password: "user-password" });
+  const username = `listed-${Date.now()}`;
+  await registerUser({ username, password: "user-password" });
   const adminSession = await loginUser({ username: "admin", password: "admin-password" });
 
   const response = await app.request("/api/admin/users", {
@@ -164,6 +166,7 @@ test("admin user list does not include passwords, prompts, or images", async () 
   assert.equal(response.status, 200);
   const bodyText = await response.text();
   assert.match(bodyText, /"users"/);
+  assert.match(bodyText, new RegExp(`"username":"${username}"`));
   assert.doesNotMatch(bodyText, /passwordHash|prompt|asset|image/);
 });
 

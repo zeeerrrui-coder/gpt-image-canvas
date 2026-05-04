@@ -14,7 +14,8 @@ import { sessions, users } from "./schema.js";
 const scrypt = promisify(scryptCallback);
 const PASSWORD_KEY_LENGTH = 64;
 const SESSION_TOKEN_BYTES = 32;
-const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 30;
+export const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 30;
+const SESSION_DURATION_MS = 1000 * SESSION_DURATION_SECONDS;
 
 export type UserRole = "admin" | "user";
 export type UserStatus = "active" | "disabled";

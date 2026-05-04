@@ -13,6 +13,7 @@ import {
   loginUser,
   logoutSessionToken,
   registerUser,
+  SESSION_DURATION_SECONDS,
   type AppUser
 } from "./auth-service.js";
 import {
@@ -652,6 +653,7 @@ function setSessionCookie(c: Context, token: string, expiresAt: string): void {
   setCookie(c, SESSION_COOKIE_NAME, token, {
     expires: new Date(expiresAt),
     httpOnly: true,
+    maxAge: SESSION_DURATION_SECONDS,
     path: "/",
     sameSite: "Lax"
   });
