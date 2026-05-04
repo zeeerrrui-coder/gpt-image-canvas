@@ -73,6 +73,7 @@ interface AssetCloudStorageRecord {
 
 type PersistedGenerationInput = ImageProviderInput & {
   mode: "generate" | "edit";
+  userId: string;
   referenceAssetIds?: string[];
   referenceAssetId?: string;
 };
@@ -83,17 +84,23 @@ const mimeTypes: Record<OutputFormat, string> = {
   webp: "image/webp"
 };
 
-export async function runTextToImageGeneration(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<GenerationResponse> {
+export async function runTextToImageGeneration(
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  userId: string,
+  signal?: AbortSignal
+): Promise<GenerationResponse> {
   const outputs = await mapWithConcurrency(
     Array.from({ length: input.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => generateSingleOutput(input, provider, signal)
+    async () => generateSingleOutput(input, provider, userId, signal)
   );
 
   const record = saveGenerationRecord(
     {
       ...input,
-      mode: "generate"
+      mode: "generate",
+      userId
     },
     outputs
   );
@@ -106,9 +113,10 @@ export async function runTextToImageGeneration(input: ImageProviderInput, provid
 export async function runReferenceImageGeneration(
   input: EditImageProviderInput,
   provider: ImageProvider,
+  userId: string,
   signal?: AbortSignal
 ): Promise<GenerationResponse> {
-  const referenceAssetIds = await ensureReferenceAssetIds(input);
+  const referenceAssetIds = await ensureReferenceAssetIds(input, userId);
   const inputWithReferenceAssets: EditImageProviderInput = {
     ...input,
     referenceAssetIds,
@@ -118,13 +126,14 @@ export async function runReferenceImageGeneration(
   const outputs = await mapWithConcurrency(
     Array.from({ length: inputWithReferenceAssets.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => editSingleOutput(inputWithReferenceAssets, provider, signal)
+    async () => editSingleOutput(inputWithReferenceAssets, provider, userId, signal)
   );
 
   const record = saveGenerationRecord(
     {
       ...inputWithReferenceAssets,
-      mode: "edit"
+      mode: "edit",
+      userId
     },
     outputs
   );
@@ -134,16 +143,16 @@ export async function runReferenceImageGeneration(
   };
 }
 
-async function ensureReferenceAssetIds(input: EditImageProviderInput): Promise<string[]> {
+async function ensureReferenceAssetIds(input: EditImageProviderInput, userId: string): Promise<string[]> {
   if (input.referenceAssetIds?.length === input.referenceImages.length) {
     return input.referenceAssetIds;
   }
 
-  const savedReferenceAssets = await Promise.all(input.referenceImages.map(saveReferenceImageInput));
+  const savedReferenceAssets = await Promise.all(input.referenceImages.map((referenceImage) => saveReferenceImageInput(referenceImage, userId)));
   return savedReferenceAssets.map((asset) => asset.id);
 }
 
-async function saveReferenceImageInput(input: ReferenceImageInput): Promise<GeneratedAsset> {
+async function saveReferenceImageInput(input: ReferenceImageInput, userId: string): Promise<GeneratedAsset> {
   const parsed = referenceDataUrlToBytes(input);
   const imageSize = await readImageSize(parsed.bytes);
   if (!imageSize) {
@@ -161,6 +170,7 @@ async function saveReferenceImageInput(input: ReferenceImageInput): Promise<Gene
   db.insert(assets)
     .values({
       id: assetId,
+      userId,
       fileName,
       relativePath,
       mimeType: parsed.mimeType,
@@ -206,9 +216,12 @@ function extensionForMimeType(mimeType: string): string {
   return mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
 }
 
-export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined {
+export function getStoredAssetFile(assetId: string, userId?: string): StoredAssetFile | undefined {
   const asset = db.select().from(assets).where(eq(assets.id, assetId)).get();
   if (!asset) {
+    return undefined;
+  }
+  if (userId && asset.userId !== userId) {
     return undefined;
   }
 
@@ -226,8 +239,8 @@ export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined
   };
 }
 
-export async function readStoredAsset(assetId: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
-  const file = getStoredAssetFile(assetId);
+export async function readStoredAsset(assetId: string, userId?: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
+  const file = getStoredAssetFile(assetId, userId);
   if (!file) {
     return undefined;
   }
@@ -251,8 +264,8 @@ export async function readStoredAsset(assetId: string): Promise<{ file: StoredAs
   }
 }
 
-export async function readStoredAssetMetadata(assetId: string): Promise<AssetMetadataResponse | undefined> {
-  const asset = await readStoredAsset(assetId);
+export async function readStoredAssetMetadata(assetId: string, userId?: string): Promise<AssetMetadataResponse | undefined> {
+  const asset = await readStoredAsset(assetId, userId);
   if (!asset) {
     return undefined;
   }
@@ -269,7 +282,12 @@ export async function readStoredAssetMetadata(assetId: string): Promise<AssetMet
   };
 }
 
-async function generateSingleOutput(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+async function generateSingleOutput(
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  userId: string,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -288,7 +306,7 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(providerImage, input, userId, signal);
 
     return {
       id: outputId,
@@ -309,7 +327,12 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
   }
 }
 
-async function editSingleOutput(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+async function editSingleOutput(
+  input: EditImageProviderInput,
+  provider: ImageProvider,
+  userId: string,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -328,7 +351,7 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(providerImage, input, userId, signal);
 
     return {
       id: outputId,
@@ -349,7 +372,12 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
   }
 }
 
-async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, _signal?: AbortSignal): Promise<SavedProviderImage> {
+async function saveProviderImage(
+  image: ProviderImage,
+  input: ImageProviderInput,
+  userId: string,
+  _signal?: AbortSignal
+): Promise<SavedProviderImage> {
   const assetId = randomUUID();
   const fileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
   const relativePath = `assets/${fileName}`;
@@ -414,6 +442,7 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
   db.insert(generationRecords)
     .values({
       id: generationId,
+      userId: input.userId,
       mode: input.mode,
       prompt: input.originalPrompt,
       effectivePrompt: input.prompt,
@@ -446,6 +475,7 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
       db.insert(assets)
         .values({
           id: output.asset.id,
+          userId: input.userId,
           fileName: output.asset.fileName,
           relativePath: `assets/${output.asset.fileName}`,
           mimeType: output.asset.mimeType,

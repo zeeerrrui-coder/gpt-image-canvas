@@ -150,8 +150,13 @@ const commonApiErrorMessages: Record<Locale, Record<string, string>> = {
     invalid_prompt: "请输入有效的提示词。",
     invalid_request: "请求内容无效。",
     invalid_size: "请提供有效的图像尺寸。",
+    insufficient_credits: "积分不足，请联系管理员发放积分。",
     missing_api_key: "服务器缺少可用的 OpenAI API Key。",
     not_found: "找不到请求的资源。",
+    unauthorized: "请先登录。",
+    forbidden: "需要管理员权限。",
+    auth_error: "账号操作失败。",
+    credit_error: "积分操作失败。",
     provider_config_error: "服务配置保存失败。",
     storage_config_error: "云存储配置保存失败。",
     upstream_failure: "上游图像服务请求失败，请稍后重试。",
@@ -165,8 +170,13 @@ const commonApiErrorMessages: Record<Locale, Record<string, string>> = {
     invalid_prompt: "Enter a valid prompt.",
     invalid_request: "The request is invalid.",
     invalid_size: "Provide a valid image size.",
+    insufficient_credits: "Not enough credits. Ask the administrator to grant credits.",
     missing_api_key: "The server does not have an available OpenAI API key.",
     not_found: "The requested resource was not found.",
+    unauthorized: "Sign in first.",
+    forbidden: "Administrator permission is required.",
+    auth_error: "Account action failed.",
+    credit_error: "Credit action failed.",
     provider_config_error: "Provider settings could not be saved.",
     storage_config_error: "Cloud storage settings could not be saved.",
     upstream_failure: "The upstream image service request failed. Try again later.",
@@ -177,7 +187,7 @@ const commonApiErrorMessages: Record<Locale, Record<string, string>> = {
 
 const zhMessages = {
   appCanvasAria: "gpt-image-canvas 创作画布",
-  appGalleryLoading: "正在载入 Gallery...",
+  appGalleryLoading: "正在载入画廊...",
   appTagline: "本地 AI 图像画布",
   authStatusLoadFailed: "无法读取图像服务登录状态。",
   autosaveFailed: "自动保存失败，当前画布已保留，请稍后继续编辑。",
@@ -214,38 +224,38 @@ const zhMessages = {
   errorFallback: ({ status }: { status: number }) => `生成请求失败，状态 ${status}。`,
   errorHttpSuffix: ({ status }: { status: number }) => `（HTTP ${status}）`,
   galleryActionCopyPrompt: ({ excerpt }: { excerpt: string }) => `复制提示词：${excerpt}`,
-  galleryActionDeleteImage: ({ excerpt }: { excerpt: string }) => `删除 Gallery 图片：${excerpt}`,
+  galleryActionDeleteImage: ({ excerpt }: { excerpt: string }) => `删除画廊图片：${excerpt}`,
   galleryActionDownloadImage: ({ excerpt }: { excerpt: string }) => `下载图片：${excerpt}`,
   galleryActionOpenImage: ({ excerpt }: { excerpt: string }) => `打开图片详情：${excerpt}`,
   galleryActionOpenLatest: ({ excerpt }: { excerpt: string }) => `打开最新作品详情：${excerpt}`,
   galleryActionReusePrompt: ({ excerpt }: { excerpt: string }) => `复用提示词：${excerpt}`,
   galleryBadgeLatest: "最新",
   galleryConfirmDeleteBody: ({ excerpt }: { excerpt: string }) =>
-    `将从 Gallery 和生成历史移除“${excerpt}”。画布中的图片、本地文件和资产记录会保留。`,
+    `将从画廊和生成历史移除“${excerpt}”。画布中的图片、本地文件和资产记录会保留。`,
   galleryConfirmRemove: "确认移除",
-  galleryConfirmDeleteTitle: "移除这张 Gallery 图片？",
+  galleryConfirmDeleteTitle: "移除这张画廊图片？",
   galleryCopiedPrompt: "已复制提示词。",
   galleryDeleteFailed: "删除失败，请重试。",
-  galleryDeleted: "已从 Gallery 和生成历史移除。",
-  galleryDetailEyebrow: "Gallery Detail",
+  galleryDeleted: "已从画廊和生成历史移除。",
+  galleryDetailEyebrow: "画廊详情",
   galleryDetailTitle: "图片详情",
   galleryDownloadOriginal: "下载原图",
   galleryEmpty: "暂无作品",
   galleryEmptyHint: "生成成功的图片会出现在这里。",
   galleryHeaderMeta: ({ count }: { count: number }) => `${count} 张本地作品，按最新生成排序`,
-  galleryKicker: "Gallery",
-  galleryLoadFailed: "Gallery 加载失败。",
-  galleryLoading: "正在载入 Gallery...",
+  galleryKicker: "画廊",
+  galleryLoadFailed: "画廊加载失败。",
+  galleryLoading: "正在载入画廊...",
   galleryNoMatches: "没有匹配结果",
   galleryNoMatchesHint: "换一个提示词关键词再试试。",
   galleryOpenDownload: "已打开原图下载。",
   galleryPromptLabel: "提示词",
-  galleryRemovedTitle: "从 Gallery 移除",
+  galleryRemovedTitle: "从画廊移除",
   galleryRequestFailed: ({ status }: { status: number }) => `请求失败，状态 ${status}。`,
   galleryReuseToCanvas: "复用到画布",
-  gallerySearchAria: "搜索 Gallery 提示词",
+  gallerySearchAria: "搜索画廊提示词",
   gallerySearchPlaceholder: "搜索提示词、主题或风格",
-  galleryServiceInvalidData: "Gallery 服务返回了无法识别的数据。",
+  galleryServiceInvalidData: "画廊服务返回了无法识别的数据。",
   galleryTitle: "作品图库",
   galleryToggleCollapse: "收起",
   galleryToggleExpand: "展开",
@@ -288,7 +298,7 @@ const zhMessages = {
   generationInsertedPartialBody: ({ inserted, failed }: { inserted: number; failed: number }) =>
     `已向画布插入 ${inserted} 张图像，${failed} 张失败。`,
   generationInvalidResponse: "生成服务返回了无法识别的结果。",
-  generationGalleryReused: "已从 Gallery 填入生成参数。",
+  generationGalleryReused: "已从画廊填入生成参数。",
   generationLocatePending: "已定位到生成中的任务。",
   generationLocateSucceeded: "已定位到历史图像。",
   generationMissingPromptHistory: "这条历史记录没有可复制的提示词。",
@@ -333,7 +343,7 @@ const zhMessages = {
   homeAuthChecking: "正在检查本地凭据",
   homeDeck: "把提示词、参考图、生成历史和视觉比较收束到一张本地画布里。",
   homeEntryAria: "进入方式",
-  homeGallery: "打开 Gallery",
+  homeGallery: "打开画廊",
   homeKicker: "专业 AI 画布",
   homeProviderCodex: "Codex 会话已可用",
   homeProviderNone: "等待接入生成服务",
@@ -349,11 +359,12 @@ const zhMessages = {
   imageSizeTotalTooLarge: ({ maxPixels }: { maxPixels: string }) => `总像素不能超过 ${maxPixels}。`,
   imageSizeTotalTooSmall: ({ minPixels }: { minPixels: string }) => `总像素不能小于 ${minPixels}。`,
   imageSizeUnsupportedPreset: "不支持的场景尺寸预设。",
+  insufficientCredits: ({ count }: { count: number }) => `当前积分不足，本次需要 ${count} 积分。请联系管理员发放积分。`,
   languageAria: "语言",
   languageEn: "EN",
   languageZh: "中文",
   navCanvas: "画布",
-  navGallery: "Gallery",
+  navGallery: "画廊",
   navHome: "首页",
   navMainAria: "主要页面",
   navOpenProviderConfig: "打开生成服务配置",
@@ -468,7 +479,7 @@ const zhMessages = {
     stylePresetLabels["zh-CN"][presetId as StylePresetId] ?? fallback ?? presetId,
   timeoutFormat: ({ seconds }: { seconds: number }) => `${seconds}s`,
   timeFallback15Minutes: "15 分钟后",
-  unreadableGallery: "Gallery",
+  unreadableGallery: "画廊",
   modeLabel: ({ mode }: { mode: GenerationRecord["mode"] }) => generationModeLabels["zh-CN"][mode],
   galleryModeLabel: ({ mode }: { mode: "edit" | "generate" }) => (mode === "edit" ? "参考图" : "文生图")
 };
@@ -651,6 +662,7 @@ const enMessages: I18nMessages = {
   imageSizeTotalTooLarge: ({ maxPixels }) => `Total pixels cannot exceed ${maxPixels}.`,
   imageSizeTotalTooSmall: ({ minPixels }) => `Total pixels cannot be less than ${minPixels}.`,
   imageSizeUnsupportedPreset: "Unsupported scene size preset.",
+  insufficientCredits: ({ count }) => `Not enough credits. This request needs ${count} credits. Ask the administrator to grant credits.`,
   languageAria: "Language",
   languageEn: "EN",
   languageZh: "中文",
@@ -877,15 +889,7 @@ function createTranslate(locale: Locale): Translate {
 }
 
 function initialLocale(): Locale {
-  const storedLocale = readStoredLocale();
-  if (storedLocale) {
-    return storedLocale;
-  }
-
-  return navigator.languages.some((language) => language.toLowerCase().startsWith("zh")) ||
-    navigator.language.toLowerCase().startsWith("zh")
-    ? "zh-CN"
-    : "en";
+  return "zh-CN";
 }
 
 function readStoredLocale(): Locale | undefined {

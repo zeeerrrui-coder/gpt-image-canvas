@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.2.0` adds a credential-aware homepage, Codex device login fallback, and the existing Tencent Cloud COS backup / OpenAI-compatible image response support.
+Controlled AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. The current app includes username/password accounts, an administrator console, and credit limits: regular users register with 0 credits, administrators grant credits, each successful image costs 1 credit, and failed images do not deduct credits.
 
 ## Preview
 
@@ -15,14 +15,15 @@ Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. V
 - Optional Tencent Cloud COS backup for newly generated images.
 - Generation history with locate, rerun, download, and cloud upload status.
 - OpenAI-compatible image endpoint support, including PackyCode / `gpt-image` style responses.
-- Credential-aware routes with a global provider configuration dialog, API-key priority, local API storage, and optional Codex login fallback.
+- Username/password accounts, administrator credit management, and hidden provider settings for regular users.
 
 ## Requirements
 
 - Node.js 22 or newer.
 - pnpm 9.14.2. The package manager is pinned in `package.json`; Corepack can activate it with `corepack prepare pnpm@9.14.2 --activate`.
 - Docker Desktop or a compatible Docker Engine for the Docker workflow.
-- An OpenAI API key with access to `gpt-image-2`, or a Codex login completed from the app, for live generation. The app can boot without credentials and will show the homepage until a provider is available.
+- An OpenAI API key with access to `gpt-image-2`, or an administrator Codex login completed from the app, for live generation.
+- Administrator bootstrap variables: `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 
 ## Quick Start
 
@@ -44,22 +45,33 @@ pnpm dev
 
 For API-key based live generation, set `OPENAI_API_KEY` in `.env` or open the top-right `配置` dialog in the app and save one local OpenAI-compatible API configuration. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env` or enter a local Base URL in the dialog; to use a different compatible image model, set `OPENAI_IMAGE_MODEL` or the dialog's advanced model field.
 
+Before first deployment, set the administrator account in `.env`:
+
+```sh
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
+```
+
+When no administrator exists and both values are set, the API creates that administrator on startup. Regular users can register themselves, but they start with 0 credits and need an administrator to grant credits before generation.
+
 Open the web app at `http://localhost:5173`.
 
-## Authentication And Routes
+## Accounts, Credits, And Routes
 
-- `/` is the credential-aware homepage. If neither `OPENAI_API_KEY` nor a valid Codex session is available, it presents the project overview with two actions: `Codex 登录` and `接入 API`.
-- `/canvas` is the working canvas. When no generation provider is available, the app routes users back to `/`; when a provider is available, `/` routes into `/canvas`.
-- `/gallery` remains accessible in all credential states so locally saved work can still be viewed.
-- The top-right `配置` button is available from Home, Canvas, and Gallery. It shows provider priority and source details for environment OpenAI, local OpenAI-compatible API, and Codex.
+- Logged-out visitors see the Chinese login/register screen instead of the old homepage.
+- `/canvas` is the working canvas and the default signed-in route.
+- `/gallery` is the gallery and only shows the signed-in user's own generated results.
+- `/admin` is the administrator console for accounts and credits. It does not show other users' images, prompts, or canvas content.
+- Regular users register with 0 credits and cannot generate until an administrator grants credits.
+- Each successful image costs 1 credit. Total failures deduct 0 credits; partial success only deducts successful outputs.
+- The top-right `配置` button is only visible to administrators. It shows provider priority and source details for environment OpenAI, local OpenAI-compatible API, and Codex.
 - Provider priority defaults to environment OpenAI, local OpenAI, then Codex, and can be reordered in the dialog. Fallback only happens before a request is created when a higher-priority source is empty or unavailable.
 - Environment values remain read-only. The dialog masks `OPENAI_API_KEY`, shows Base URL, model, timeout, and reminds you to restart the API after `.env` changes.
-- The `接入 API` action on Home opens the same provider configuration dialog, where a local API key can be saved or replaced.
-- The `Codex 登录` modal starts Codex device login, displays the verification URL and user code, and stores resulting OAuth token material only on the local API side.
+- The `Codex 登录` modal is only available to administrators, displays the verification URL and user code, and stores resulting OAuth token material only on the local API side.
 
 ## Provider Configuration
 
-The provider configuration dialog saves only one local OpenAI-compatible API profile. Local API keys are stored in the SQLite database under `DATA_DIR`, returned only as masked values, and preserved unless you enter a replacement key. This is meant for a local workstation workflow, not a public web deployment.
+The provider configuration dialog saves only one local OpenAI-compatible API profile. Local API keys are stored in the SQLite database under `DATA_DIR`, returned only as masked values, and preserved unless you enter a replacement key. Only administrators can access provider, Codex, and COS settings.
 
 Environment variables are still the most explicit operator-controlled source. They are visible as a read-only provider source in the dialog, are not edited by the app, and remain first in the default order. You can reorder sources in the UI, but do not expose the app publicly while `.env`, local provider keys, Codex tokens, or COS secrets are configured.
 
@@ -163,7 +175,7 @@ macOS/Linux:
 NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
-`OPENAI_API_KEY` may be left empty for local boot checks, in-app local provider configuration, or Codex-login based generation. The app still starts; without any available provider, generation endpoints return a `missing_provider` JSON error and the browser opens on the homepage.
+`OPENAI_API_KEY` may be left empty for local boot checks, administrator-managed local provider configuration, or administrator Codex-login based generation. The app still starts; without any available provider, generation endpoints return a `missing_provider` JSON error and the browser shows the login/register screen.
 
 ## Tencent Cloud COS Backup
 
@@ -204,7 +216,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 
 ## Troubleshooting
 
-- Missing or empty `OPENAI_API_KEY`: the app still boots. If no local API config or Codex session is available, `/` shows the homepage and text-to-image / reference-image requests return `missing_provider`. Add a valid key to `.env` and restart the API or Docker container, save a local API key from `配置`, or use the `Codex 登录` flow.
+- Missing or empty `OPENAI_API_KEY`: the app still boots. If no local API config or Codex session is available, text-to-image / reference-image requests return `missing_provider`. An administrator can add a valid key to `.env` and restart the API or Docker container, save a local API key from `配置`, or use the `Codex 登录` flow.
 - Codex login cannot complete: confirm the machine can reach `https://auth.openai.com`, keep the device-login dialog open until authorization finishes, and restart the flow if the user code expires. Do not paste or log token values.
 - Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container, or enter a local Base URL in `配置`. The endpoint must be OpenAI-compatible and support the configured image model.
 - Missing model access: confirm the OpenAI organization and project used by the active provider key can access the configured image model. Set `OPENAI_IMAGE_MODEL` or the local advanced model field if your compatible endpoint expects a different model name.

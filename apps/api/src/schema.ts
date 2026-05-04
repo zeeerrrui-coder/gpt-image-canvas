@@ -1,8 +1,44 @@
 import { relations } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").notNull(),
+  status: text("status").notNull(),
+  credits: integer("credits").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull()
+});
+
+export const creditTransactions = sqliteTable("credit_transactions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),
+  amount: integer("amount").notNull(),
+  balanceAfter: integer("balance_after").notNull(),
+  generationId: text("generation_id"),
+  adminId: text("admin_id").references(() => users.id),
+  note: text("note"),
+  createdAt: text("created_at").notNull()
+});
+
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   snapshotJson: text("snapshot_json").notNull(),
   createdAt: text("created_at").notNull(),
@@ -11,6 +47,7 @@ export const projects = sqliteTable("projects", {
 
 export const assets = sqliteTable("assets", {
   id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   fileName: text("file_name").notNull(),
   relativePath: text("relative_path").notNull(),
   mimeType: text("mime_type").notNull(),
@@ -69,6 +106,7 @@ export const codexOAuthTokens = sqliteTable("codex_oauth_tokens", {
 
 export const generationRecords = sqliteTable("generation_records", {
   id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   mode: text("mode").notNull(),
   prompt: text("prompt").notNull(),
   effectivePrompt: text("effective_prompt").notNull(),

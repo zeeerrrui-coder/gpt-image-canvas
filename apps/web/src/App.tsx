@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  UserCircle2,
   X,
   XCircle
 } from "lucide-react";
@@ -46,7 +47,8 @@ import {
   GenerationPlaceholderShapeUtil,
   type GenerationPlaceholderShape
 } from "./GenerationPlaceholderShape";
-import { HomePage } from "./HomePage";
+import { AdminPage } from "./AdminPage";
+import { AuthPage } from "./AuthPage";
 import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import {
   CUSTOM_SIZE_PRESET_ID,
@@ -64,6 +66,8 @@ import {
   STYLE_PRESETS,
   resolutionTierForSize,
   validateImageSize,
+  type AppUser,
+  type AuthMeResponse,
   type AuthStatusResponse,
   type AssetMetadataResponse,
   type CodexDevicePollResponse,
@@ -187,7 +191,7 @@ function preloadGalleryPage(): void {
 }
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
-type AppRoute = "home" | "canvas" | "gallery";
+type AppRoute = "canvas" | "gallery" | "admin";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelStatusTone = "progress" | "success" | "warning" | "error";
@@ -336,19 +340,23 @@ function imageSizeValidationMessage(reason: ImageSizeValidationReason | undefine
 }
 
 function routeFromLocation(): AppRoute {
-  if (window.location.pathname === "/canvas") {
-    return "canvas";
+  if (window.location.pathname === "/gallery") {
+    return "gallery";
   }
 
-  return window.location.pathname === "/gallery" ? "gallery" : "home";
+  if (window.location.pathname === "/admin") {
+    return "admin";
+  }
+
+  return "canvas";
 }
 
 function pathForRoute(route: AppRoute): string {
-  if (route === "canvas") {
-    return "/canvas";
+  if (route === "gallery") {
+    return "/gallery";
   }
 
-  return route === "gallery" ? "/gallery" : "/";
+  return route === "admin" ? "/admin" : "/canvas";
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -1541,11 +1549,15 @@ function BrandName() {
 }
 
 function TopNavigation({
+  currentUser,
+  onLogout,
   onOpenProviderConfig,
   route,
   onNavigate,
   onPreloadGallery
 }: {
+  currentUser: AppUser;
+  onLogout: () => void;
   onOpenProviderConfig: () => void;
   route: AppRoute;
   onNavigate: (route: AppRoute) => void;
@@ -1565,20 +1577,6 @@ function TopNavigation({
         </div>
         <div className="top-navigation__actions">
           <nav aria-label={t("navMainAria")} className="top-navigation__links">
-            <a
-              aria-current={route === "home" ? "page" : undefined}
-              className="top-navigation__link"
-              data-active={route === "home"}
-              data-testid="nav-home"
-              href="/"
-              onClick={(event) => {
-                event.preventDefault();
-                onNavigate("home");
-              }}
-            >
-              <Sparkles className="size-4" aria-hidden="true" />
-              {t("navHome")}
-            </a>
             <a
               aria-current={route === "canvas" ? "page" : undefined}
               className="top-navigation__link"
@@ -1609,18 +1607,44 @@ function TopNavigation({
               <ImageIcon className="size-4" aria-hidden="true" />
               {t("navGallery")}
             </a>
+            {currentUser.role === "admin" ? (
+              <a
+                aria-current={route === "admin" ? "page" : undefined}
+                className="top-navigation__link"
+                data-active={route === "admin"}
+                data-testid="nav-admin"
+                href="/admin"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onNavigate("admin");
+                }}
+              >
+                <ShieldCheck className="size-4" aria-hidden="true" />
+                后台
+              </a>
+            ) : null}
           </nav>
-          <LanguageSwitcher />
-          <button
-            aria-label={t("navOpenProviderConfig")}
-            className="top-navigation__settings"
-            data-testid="global-provider-settings"
-            title={t("navProviderConfig")}
-            type="button"
-            onClick={onOpenProviderConfig}
-          >
-            <Settings className="size-4" aria-hidden="true" />
-            <span>{t("navSettings")}</span>
+          <div className="account-chip" title={`当前用户：${currentUser.username}`}>
+            <UserCircle2 className="size-4" aria-hidden="true" />
+            <span>{currentUser.username}</span>
+            <strong>{currentUser.credits} 积分</strong>
+          </div>
+          {currentUser.role === "admin" ? (
+            <button
+              aria-label={t("navOpenProviderConfig")}
+              className="top-navigation__settings"
+              data-testid="global-provider-settings"
+              title={t("navProviderConfig")}
+              type="button"
+              onClick={onOpenProviderConfig}
+            >
+              <Settings className="size-4" aria-hidden="true" />
+              <span>{t("navSettings")}</span>
+            </button>
+          ) : null}
+          <button className="top-navigation__settings" type="button" onClick={onLogout}>
+            <LogOut className="size-4" aria-hidden="true" />
+            <span>退出</span>
           </button>
         </div>
       </div>
@@ -1814,7 +1838,8 @@ export function App() {
     setUserPreferences: syncTldrawUserPreferences
   });
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
-  const shouldAutoOpenCanvasRef = useRef(route !== "gallery");
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [isSessionLoading, setIsSessionLoading] = useState(true);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -1864,15 +1889,16 @@ export function App() {
   const codexPollTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
   const isGenerating = activeGenerationCount > 0;
-  const hasGenerationProvider = authStatus?.provider === "openai" || authStatus?.provider === "codex";
+  const isAdmin = currentUser?.role === "admin";
 
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = prompt.trim() ? "" : t("promptRequired");
   const dimensionValidationMessage = sizeValidationMessage(width, height, t, locale);
+  const creditValidationMessage = currentUser && currentUser.credits < count ? t("insufficientCredits", { count }) : "";
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
   const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
-  const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
+  const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage || creditValidationMessage;
   const shouldShowValidation = Boolean(validationMessage);
   const canGenerate = !validationMessage;
   const tldrawComponents = useMemo(
@@ -1890,10 +1916,6 @@ export function App() {
   );
 
   const navigateToRoute = useCallback((nextRoute: AppRoute, options: { replace?: boolean } = {}): void => {
-    if (!options.replace) {
-      shouldAutoOpenCanvasRef.current = false;
-    }
-
     const nextPath = pathForRoute(nextRoute);
     if (window.location.pathname !== nextPath) {
       if (options.replace) {
@@ -1912,6 +1934,29 @@ export function App() {
   const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
   const hasAdditionalHistory = hiddenHistoryCount > 0;
   const isExtendedCountSelected = EXTENDED_GENERATION_COUNTS.includes(count);
+  const loadCurrentUser = useCallback(async (signal?: AbortSignal): Promise<AppUser | null> => {
+    setIsSessionLoading(true);
+
+    try {
+      const response = await fetch("/api/auth/me", { signal });
+      if (!response.ok) {
+        throw new Error(`Session load failed with ${response.status}`);
+      }
+
+      const body = (await response.json()) as AuthMeResponse;
+      setCurrentUser(body.user);
+      return body.user;
+    } catch {
+      if (!signal?.aborted) {
+        setCurrentUser(null);
+      }
+      return null;
+    } finally {
+      if (!signal?.aborted) {
+        setIsSessionLoading(false);
+      }
+    }
+  }, []);
   const loadAuthStatus = useCallback(async (signal?: AbortSignal): Promise<AuthStatusResponse | null> => {
     setIsAuthLoading(true);
     setAuthError("");
@@ -1938,6 +1983,24 @@ export function App() {
       }
     }
   }, [locale, t]);
+
+  const handleAuthenticated = useCallback((user: AppUser): void => {
+    setCurrentUser(user);
+    setProjectSnapshot(undefined);
+    setGenerationHistory([]);
+    setIsProjectLoaded(false);
+    navigateToRoute("canvas", { replace: true });
+  }, [navigateToRoute]);
+
+  const logoutApp = useCallback(async (): Promise<void> => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    setCurrentUser(null);
+    setAuthStatus(null);
+    setProjectSnapshot(undefined);
+    setGenerationHistory([]);
+    setIsProjectLoaded(false);
+    navigateToRoute("canvas", { replace: true });
+  }, [navigateToRoute]);
 
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
@@ -2015,6 +2078,30 @@ export function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    void loadCurrentUser(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [loadCurrentUser]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    if (route === "admin" && currentUser.role !== "admin") {
+      navigateToRoute("canvas", { replace: true });
+    }
+  }, [currentUser, navigateToRoute, route]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setIsProjectLoaded(false);
+      return;
+    }
+
+    const controller = new AbortController();
 
     async function loadProject(): Promise<void> {
       setSaveStatus("loading");
@@ -2055,9 +2142,15 @@ export function App() {
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [currentUser?.id, t]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setAuthStatus(null);
+      setIsAuthLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
 
     void loadAuthStatus(controller.signal);
@@ -2065,25 +2158,14 @@ export function App() {
     return () => {
       controller.abort();
     };
-  }, [loadAuthStatus]);
+  }, [isAdmin, loadAuthStatus]);
 
   useEffect(() => {
-    if (isAuthLoading || !authStatus || route === "gallery") {
+    if (!isAdmin) {
+      setStorageConfig(null);
       return;
     }
 
-    if (route === "home" && hasGenerationProvider && shouldAutoOpenCanvasRef.current) {
-      shouldAutoOpenCanvasRef.current = false;
-      navigateToRoute("canvas", { replace: true });
-      return;
-    }
-
-    if (route === "canvas" && !hasGenerationProvider) {
-      navigateToRoute("home", { replace: true });
-    }
-  }, [authStatus, hasGenerationProvider, isAuthLoading, navigateToRoute, route]);
-
-  useEffect(() => {
     const controller = new AbortController();
 
     async function loadStorageConfig(): Promise<void> {
@@ -2115,7 +2197,7 @@ export function App() {
     return () => {
       controller.abort();
     };
-  }, [t]);
+  }, [isAdmin, t]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(MOBILE_DRAWER_MEDIA_QUERY);
@@ -2627,6 +2709,9 @@ export function App() {
       if (!isGenerationResponse(body)) {
         throw new Error(t("generationInvalidResponse"));
       }
+      if (body.user) {
+        setCurrentUser(body.user);
+      }
 
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
@@ -2899,25 +2984,40 @@ export function App() {
     setGenerationWarning("");
   }
 
+  if (isSessionLoading) {
+    return (
+      <div className="app-root">
+        <main className="auth-page app-view" role="status">
+          <div className="canvas-loading-state">
+            <BrandMark className="brand-mark--large" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-neutral-800">正在载入账号</p>
+              <p className="mt-1 text-xs text-neutral-500">请稍候</p>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="app-root">
+        <AuthPage onAuthenticated={handleAuthenticated} />
+      </div>
+    );
+  }
+
   return (
-    <div className="app-root" data-canvas-theme={route !== "home" && isCanvasDarkMode ? "dark" : "light"}>
+    <div className="app-root" data-canvas-theme={route === "canvas" && isCanvasDarkMode ? "dark" : "light"}>
       <TopNavigation
+        currentUser={currentUser}
         route={route}
+        onLogout={() => void logoutApp()}
         onNavigate={navigateToRoute}
         onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
         onPreloadGallery={preloadGalleryPage}
       />
-      {route === "home" ? (
-        <HomePage
-          authError={authError}
-          authStatus={authStatus}
-          isAuthLoading={isAuthLoading}
-          isCodexStarting={codexLoginStatus === "starting"}
-          onOpenProviderConfig={() => setIsProviderConfigDialogOpen(true)}
-          onOpenGallery={() => navigateToRoute("gallery")}
-          onStartCodexLogin={startCodexLogin}
-        />
-      ) : null}
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
@@ -2993,28 +3093,32 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <ProviderStatusPopover
-                authError={authError}
-                authStatus={authStatus}
-                codexLoginStatus={codexLoginStatus}
-                isAuthLoading={isAuthLoading}
-                onLogoutCodex={logoutCodexSession}
-                onStartCodexLogin={startCodexLogin}
-              />
-              <button
-                aria-label={t("storageSettings")}
-                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
-                  storageConfig?.enabled
-                    ? "border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100"
-                    : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900"
-                }`}
-                data-testid="storage-settings-button"
-                title={storageConfig?.enabled ? t("storageEnabledTitle") : t("storageSettings")}
-                type="button"
-                onClick={openStorageDialog}
-              >
-                <Cloud className="size-4" aria-hidden="true" />
-              </button>
+              {isAdmin ? (
+                <>
+                  <ProviderStatusPopover
+                    authError={authError}
+                    authStatus={authStatus}
+                    codexLoginStatus={codexLoginStatus}
+                    isAuthLoading={isAuthLoading}
+                    onLogoutCodex={logoutCodexSession}
+                    onStartCodexLogin={startCodexLogin}
+                  />
+                  <button
+                    aria-label={t("storageSettings")}
+                    className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
+                      storageConfig?.enabled
+                        ? "border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100"
+                        : "border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900"
+                    }`}
+                    data-testid="storage-settings-button"
+                    title={storageConfig?.enabled ? t("storageEnabledTitle") : t("storageSettings")}
+                    type="button"
+                    onClick={openStorageDialog}
+                  >
+                    <Cloud className="size-4" aria-hidden="true" />
+                  </button>
+                </>
+              ) : null}
               <div
                 className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
                   saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
@@ -3506,7 +3610,7 @@ export function App() {
         </div>
       </aside>
 
-      {isStorageDialogOpen ? (
+      {isStorageDialogOpen && isAdmin ? (
         <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="storage-dialog">
           <div
             aria-labelledby="storage-dialog-title"
@@ -3725,7 +3829,7 @@ export function App() {
         document.body
       ) : null}
       </main>
-      {isProviderConfigDialogOpen ? (
+      {isProviderConfigDialogOpen && isAdmin ? (
         <ProviderConfigDialog
           isAuthLoading={isAuthLoading}
           isCodexStarting={codexLoginStatus === "starting"}
@@ -3735,6 +3839,7 @@ export function App() {
           onStartCodexLogin={startCodexLogin}
         />
       ) : null}
+      {route === "admin" && currentUser.role === "admin" ? <AdminPage /> : null}
       {route === "gallery" ? (
         <Suspense
           fallback={

@@ -39,8 +39,40 @@ function isSharedMemoryOpenError(error: unknown): boolean {
 }
 
 sqlite.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY NOT NULL,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL,
+  credits INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credit_transactions (
+  id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  generation_id TEXT,
+  admin_id TEXT REFERENCES users(id),
+  note TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -49,6 +81,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   file_name TEXT NOT NULL,
   relative_path TEXT NOT NULL,
   mime_type TEXT NOT NULL,
@@ -107,6 +140,7 @@ CREATE TABLE IF NOT EXISTS codex_oauth_tokens (
 
 CREATE TABLE IF NOT EXISTS generation_records (
   id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   mode TEXT NOT NULL,
   prompt TEXT NOT NULL,
   effective_prompt TEXT NOT NULL,
@@ -140,13 +174,23 @@ CREATE TABLE IF NOT EXISTS generation_reference_assets (
 );
 
 CREATE INDEX IF NOT EXISTS generation_records_created_at_idx ON generation_records(created_at);
+CREATE INDEX IF NOT EXISTS generation_records_user_id_idx ON generation_records(user_id);
+CREATE INDEX IF NOT EXISTS assets_user_id_idx ON assets(user_id);
+CREATE INDEX IF NOT EXISTS projects_user_id_idx ON projects(user_id);
 CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_outputs(generation_id);
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_generation_id_idx ON generation_reference_assets(generation_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_asset_id_idx ON generation_reference_assets(asset_id);
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username);
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_token_hash_idx ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS credit_transactions_user_id_idx ON credit_transactions(user_id);
+CREATE INDEX IF NOT EXISTS credit_transactions_created_at_idx ON credit_transactions(created_at);
 `);
 
+ensureColumn("projects", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");
+ensureColumn("assets", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 ensureColumn("assets", "cloud_bucket", "cloud_bucket TEXT");
 ensureColumn("assets", "cloud_region", "cloud_region TEXT");
 ensureColumn("assets", "cloud_object_key", "cloud_object_key TEXT");
@@ -169,6 +213,7 @@ ensureColumn("provider_configs", "local_api_key", "local_api_key TEXT");
 ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
+ensureColumn("generation_records", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 
 backfillGenerationReferenceAssets();
 ensureProviderConfigRow();

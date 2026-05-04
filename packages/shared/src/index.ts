@@ -286,6 +286,36 @@ export interface GenerationRecord {
 
 export interface GenerationResponse {
   record: GenerationRecord;
+  user?: AppUser;
+}
+
+export type UserRole = "admin" | "user";
+export type UserStatus = "active" | "disabled";
+
+export interface AppUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  status: UserStatus;
+  credits: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthUserResponse {
+  user: AppUser;
+}
+
+export interface AuthMeResponse {
+  user: AppUser | null;
+}
+
+export interface AdminUsersResponse {
+  users: AppUser[];
+}
+
+export interface AdminCreditAdjustmentResponse {
+  user: AppUser;
 }
 
 export interface GalleryImageItem {

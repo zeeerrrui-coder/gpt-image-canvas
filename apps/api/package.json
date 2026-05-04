@@ -9,6 +9,7 @@
     "dev": "pnpm --filter @gpt-image-canvas/shared build && tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
+    "test": "pnpm --filter @gpt-image-canvas/shared build && node --import tsx --test test/*.test.ts",
     "typecheck": "pnpm --filter @gpt-image-canvas/shared build && tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js"
   },

@@ -4,7 +4,23 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
+import {
+  authenticateSessionToken,
+  ensureBootstrapAdmin,
+  listUsers,
+  loginUser,
+  logoutSessionToken,
+  registerUser,
+  type AppUser
+} from "./auth-service.js";
+import {
+  CreditError,
+  grantUserCredits,
+  refundGenerationCredits,
+  reserveGenerationCredits
+} from "./credit-service.js";
 import {
   getAuthStatus,
   logoutCodex,
@@ -23,6 +39,7 @@ import {
   validateSceneImageSize,
   type AppConfig,
   type GenerationCount,
+  type GenerationRecord,
   type ImageQuality,
   type ImageSize,
   type OutputFormat,
@@ -55,6 +72,7 @@ import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storag
 
 const MAX_PROJECT_SNAPSHOT_BYTES = 100 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 120;
+const SESSION_COOKIE_NAME = "gic_session";
 
 interface ProjectPayload {
   name?: string;
@@ -62,6 +80,10 @@ interface ProjectPayload {
 }
 
 export const app = new Hono();
+
+void ensureBootstrapAdmin().catch((error) => {
+  console.error("Admin bootstrap failed.", error);
+});
 
 app.onError((error, c) => {
   console.error(error);
@@ -97,11 +119,124 @@ app.get("/api/config", (c) => {
   return c.json(config);
 });
 
-app.get("/api/auth/status", (c) => c.json(getAuthStatus()));
+app.post("/api/auth/register", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
 
-app.get("/api/provider-config", (c) => c.json(getProviderConfig()));
+  const parsed = parseCredentialsPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    await registerUser(parsed.value);
+    const session = await loginUser(parsed.value);
+    setSessionCookie(c, session.token, session.expiresAt);
+    return c.json({ user: session.user });
+  } catch (error) {
+    return c.json(errorResponse("auth_error", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/auth/login", async (c) => {
+  await ensureBootstrapAdmin();
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseCredentialsPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    const session = await loginUser(parsed.value);
+    setSessionCookie(c, session.token, session.expiresAt);
+    return c.json({ user: session.user });
+  } catch (error) {
+    return c.json(errorResponse("auth_error", errorToMessage(error)), 401);
+  }
+});
+
+app.post("/api/auth/logout", (c) => {
+  logoutSessionToken(getSessionToken(c));
+  deleteCookie(c, SESSION_COOKIE_NAME, {
+    path: "/"
+  });
+  return c.json({ ok: true });
+});
+
+app.get("/api/auth/me", async (c) => c.json({ user: (await getCurrentUser(c)) ?? null }));
+
+app.get("/api/admin/users", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  return c.json({
+    users: listUsers()
+  });
+});
+
+app.post("/api/admin/users/:userId/credits", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseCreditAdjustmentPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json({
+      user: grantUserCredits({
+        userId: c.req.param("userId"),
+        amount: parsed.value.amount,
+        adminId: admin.user.id,
+        note: parsed.value.note
+      })
+    });
+  } catch (error) {
+    return c.json(errorResponse("credit_error", errorToMessage(error)), 400);
+  }
+});
+
+app.get("/api/auth/status", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  return c.json(getAuthStatus());
+});
+
+app.get("/api/provider-config", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  return c.json(getProviderConfig());
+});
 
 app.put("/api/provider-config", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -120,6 +255,11 @@ app.put("/api/provider-config", async (c) => {
 });
 
 app.post("/api/auth/codex/device/start", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
   try {
     return c.json(await startCodexDeviceLogin(c.req.raw.signal));
   } catch (error) {
@@ -132,6 +272,11 @@ app.post("/api/auth/codex/device/start", async (c) => {
 });
 
 app.post("/api/auth/codex/device/poll", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -153,16 +298,42 @@ app.post("/api/auth/codex/device/poll", async (c) => {
   }
 });
 
-app.post("/api/auth/codex/logout", (c) => c.json(logoutCodex()));
+app.post("/api/auth/codex/logout", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
 
-app.get("/api/project", (c) => c.json(getProjectState()));
+  return c.json(logoutCodex());
+});
 
-app.get("/api/gallery", (c) => c.json(getGalleryImages()));
+app.get("/api/project", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
 
-app.delete("/api/gallery/:outputId", (c) => {
-  const deleted = deleteGalleryOutput(c.req.param("outputId"));
+  return c.json(getProjectState(user.user.id));
+});
+
+app.get("/api/gallery", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  return c.json(getGalleryImages(user.user.id));
+});
+
+app.delete("/api/gallery/:outputId", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const deleted = deleteGalleryOutput(c.req.param("outputId"), user.user.id);
   if (!deleted) {
-    return c.json(errorResponse("not_found", "找不到请求的 Gallery 图片记录。"), 404);
+    return c.json(errorResponse("not_found", "找不到请求的画廊图片记录。"), 404);
   }
 
   return c.json({
@@ -170,9 +341,21 @@ app.delete("/api/gallery/:outputId", (c) => {
   });
 });
 
-app.get("/api/storage/config", (c) => c.json(getStorageConfig()));
+app.get("/api/storage/config", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
+  return c.json(getStorageConfig());
+});
 
 app.put("/api/storage/config", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -191,6 +374,11 @@ app.put("/api/storage/config", async (c) => {
 });
 
 app.post("/api/storage/config/test", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) {
+    return admin.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -205,9 +393,18 @@ app.post("/api/storage/config/test", async (c) => {
 });
 
 app.get("/api/assets/:id/preview", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
   const parsedWidth = parsePreviewWidth(c.req.query("width"));
   if (!parsedWidth.ok) {
     return c.json(errorResponse(parsedWidth.code, parsedWidth.message), 400);
+  }
+
+  if (!getStoredAssetFile(c.req.param("id"), user.user.id)) {
+    return c.json(errorResponse("not_found", "Asset not found."), 404);
   }
 
   const preview = await readStoredAssetPreview(c.req.param("id"), parsedWidth.width);
@@ -226,7 +423,12 @@ app.get("/api/assets/:id/preview", async (c) => {
 });
 
 app.get("/api/assets/:id/metadata", async (c) => {
-  const metadata = await readStoredAssetMetadata(c.req.param("id"));
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const metadata = await readStoredAssetMetadata(c.req.param("id"), user.user.id);
   if (!metadata) {
     return c.json(errorResponse("not_found", "Asset not found."), 404);
   }
@@ -235,7 +437,12 @@ app.get("/api/assets/:id/metadata", async (c) => {
 });
 
 app.get("/api/assets/:id/download", async (c) => {
-  const asset = await readStoredAsset(c.req.param("id"));
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const asset = await readStoredAsset(c.req.param("id"), user.user.id);
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
   }
@@ -251,7 +458,12 @@ app.get("/api/assets/:id/download", async (c) => {
 });
 
 app.get("/api/assets/:id", async (c) => {
-  const asset = await readStoredAsset(c.req.param("id"));
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
+  const asset = await readStoredAsset(c.req.param("id"), user.user.id);
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
   }
@@ -267,6 +479,11 @@ app.get("/api/assets/:id", async (c) => {
 });
 
 app.put("/api/project", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     logProjectSaveRejected(payload.error, c.req.raw);
@@ -279,10 +496,15 @@ app.put("/api/project", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  return c.json(saveProjectSnapshot(parsed.value));
+  return c.json(saveProjectSnapshot(parsed.value, user.user.id));
 });
 
 app.post("/api/images/generate", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -293,10 +515,32 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
+  let reservedCount = 0;
   try {
+    reserveGenerationCredits({
+      userId: user.user.id,
+      requestedCount: parsed.value.count
+    });
+    reservedCount = parsed.value.count;
     const provider = await createConfiguredImageProvider(c.req.raw.signal);
-    return c.json(await runTextToImageGeneration(parsed.value, provider, c.req.raw.signal));
+    const result = await runTextToImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
+    const successfulCount = successfulOutputCount(result.record);
+    const updatedUser = refundGenerationCredits({
+      userId: user.user.id,
+      generationId: result.record.id,
+      amount: parsed.value.count - successfulCount
+    });
+    return c.json({ ...result, user: updatedUser });
   } catch (error) {
+    if (reservedCount > 0) {
+      refundGenerationCredits({
+        userId: user.user.id,
+        amount: reservedCount
+      });
+    }
+    if (error instanceof CreditError) {
+      return errorJson(error.code, error.message, error.status);
+    }
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
     }
@@ -306,20 +550,47 @@ app.post("/api/images/generate", async (c) => {
 });
 
 app.post("/api/images/edit", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
   }
 
-  const parsed = parseEditPayload(payload.value);
+  const parsed = parseEditPayload(payload.value, user.user.id);
   if (!parsed.ok) {
     return c.json(parsed.error, 400);
   }
 
+  let reservedCount = 0;
   try {
+    reserveGenerationCredits({
+      userId: user.user.id,
+      requestedCount: parsed.value.count
+    });
+    reservedCount = parsed.value.count;
     const provider = await createConfiguredImageProvider(c.req.raw.signal);
-    return c.json(await runReferenceImageGeneration(parsed.value, provider, c.req.raw.signal));
+    const result = await runReferenceImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
+    const successfulCount = successfulOutputCount(result.record);
+    const updatedUser = refundGenerationCredits({
+      userId: user.user.id,
+      generationId: result.record.id,
+      amount: parsed.value.count - successfulCount
+    });
+    return c.json({ ...result, user: updatedUser });
   } catch (error) {
+    if (reservedCount > 0) {
+      refundGenerationCredits({
+        userId: user.user.id,
+        amount: reservedCount
+      });
+    }
+    if (error instanceof CreditError) {
+      return errorJson(error.code, error.message, error.status);
+    }
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
     }
@@ -349,6 +620,134 @@ function errorResponse(code: string, message: string): ErrorResponseBody {
     error: {
       code,
       message
+    }
+  };
+}
+
+function errorJson(code: string, message: string, status: number): Response {
+  return new Response(JSON.stringify(errorResponse(code, message)), {
+    status,
+    headers: {
+      "Content-Type": "application/json"
+    }
+  });
+}
+
+interface CredentialsPayload {
+  username: string;
+  password: string;
+}
+
+type AuthGuardResult =
+  | {
+      ok: true;
+      user: AppUser;
+    }
+  | {
+      ok: false;
+      response: Response;
+    };
+
+function setSessionCookie(c: Context, token: string, expiresAt: string): void {
+  setCookie(c, SESSION_COOKIE_NAME, token, {
+    expires: new Date(expiresAt),
+    httpOnly: true,
+    path: "/",
+    sameSite: "Lax"
+  });
+}
+
+function getSessionToken(c: Context): string | undefined {
+  return getCookie(c, SESSION_COOKIE_NAME);
+}
+
+async function getCurrentUser(c: Context): Promise<AppUser | undefined> {
+  return authenticateSessionToken(getSessionToken(c));
+}
+
+async function requireUser(c: Context): Promise<AuthGuardResult> {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return {
+      ok: false,
+      response: c.json(errorResponse("unauthorized", "请先登录。"), 401)
+    };
+  }
+
+  return {
+    ok: true,
+    user
+  };
+}
+
+async function requireAdmin(c: Context): Promise<AuthGuardResult> {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user;
+  }
+
+  if (user.user.role !== "admin") {
+    return {
+      ok: false,
+      response: c.json(errorResponse("forbidden", "需要管理员权限。"), 403)
+    };
+  }
+
+  return user;
+}
+
+function parseCredentialsPayload(input: unknown): ParseResult<CredentialsPayload> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请求内容必须是 JSON 对象。")
+    };
+  }
+
+  if (typeof input.username !== "string" || input.username.trim().length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请输入用户名。")
+    };
+  }
+
+  if (typeof input.password !== "string" || input.password.length < 8) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "密码至少需要 8 位。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      username: input.username,
+      password: input.password
+    }
+  };
+}
+
+function parseCreditAdjustmentPayload(input: unknown): ParseResult<{ amount: number; note?: string }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "请求内容必须是 JSON 对象。")
+    };
+  }
+
+  const amount = typeof input.amount === "number" ? input.amount : Number.NaN;
+  if (!Number.isInteger(amount) || amount === 0) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "积分变动必须是非零整数。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      amount,
+      note: typeof input.note === "string" ? input.note : undefined
     }
   };
 }
@@ -412,6 +811,10 @@ function providerHttpStatus(status: number): number {
   return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502;
 }
 
+function successfulOutputCount(record: GenerationRecord): number {
+  return record.outputs.filter((output) => output.status === "succeeded" && output.asset).length;
+}
+
 function parseGeneratePayload(input: unknown): ParseResult<ImageProviderInput> {
   const base = parseBaseImagePayload(input);
   if (!base.ok) {
@@ -451,7 +854,7 @@ function parseCodexPollPayload(input: unknown): ParseResult<{ deviceAuthId: stri
   };
 }
 
-function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
+function parseEditPayload(input: unknown, userId: string): ParseResult<EditImageProviderInput> {
   const base = parseBaseImagePayload(input);
   if (!base.ok) {
     return base;
@@ -475,7 +878,7 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
   }
 
   for (const referenceAssetId of referenceAssetIds.value) {
-    if (!getStoredAssetFile(referenceAssetId)) {
+    if (!getStoredAssetFile(referenceAssetId, userId)) {
       return {
         ok: false,
         error: errorResponse("invalid_request", "找不到可记录的本地参考图像资源。")

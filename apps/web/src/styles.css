@@ -220,6 +220,249 @@ body {
   transform: translateY(-1px);
 }
 
+.account-chip {
+  display: inline-flex;
+  height: 2.55rem;
+  max-width: 260px;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.88);
+  padding: 0 0.72rem;
+  color: #334155;
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.account-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-chip strong {
+  flex: 0 0 auto;
+  color: #0369a1;
+}
+
+.auth-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #f8fafc;
+  padding: 24px;
+}
+
+.auth-panel {
+  width: min(100%, 420px);
+  border: 1px solid rgb(15 23 42 / 0.1);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(15 23 42 / 0.12);
+  padding: 24px;
+}
+
+.auth-panel__brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: #0f172a;
+}
+
+.auth-panel__brand svg {
+  margin-top: 4px;
+  color: #0284c7;
+}
+
+.auth-panel__brand h1 {
+  font-size: 24px;
+  font-weight: 780;
+  line-height: 32px;
+}
+
+.auth-panel__brand p {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 22px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  padding: 4px;
+}
+
+.auth-tab {
+  height: 36px;
+  border-radius: 6px;
+  color: #475569;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.auth-tab[data-active="true"] {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 1px 4px rgb(15 23 42 / 0.1);
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auth-form input,
+.admin-credit-control input {
+  height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 12px;
+  color: #0f172a;
+  outline: none;
+}
+
+.auth-form input:focus,
+.admin-credit-control input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgb(14 165 233 / 0.14);
+}
+
+.auth-error {
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  padding: 10px 12px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.admin-page {
+  min-height: 0;
+  overflow: auto;
+  background: #f8fafc;
+  padding: 28px;
+}
+
+.admin-page__inner {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.admin-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.admin-header h1 {
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 780;
+  line-height: 36px;
+}
+
+.admin-header > p {
+  max-width: 420px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.admin-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #0369a1;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.admin-alert,
+.admin-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  padding: 11px 12px;
+  font-size: 14px;
+}
+
+.admin-alert--error {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.admin-alert--success {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.admin-loading {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.admin-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.admin-table th,
+.admin-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.admin-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 750;
+}
+
+.admin-user-cell,
+.admin-credit-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-credit-control input {
+  width: 150px;
+}
+
 .generation-placeholder-shape {
   position: relative;
   width: 100%;
