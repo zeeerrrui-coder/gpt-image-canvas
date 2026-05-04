@@ -68,6 +68,7 @@ export const assets = sqliteTable("assets", {
 
 export const storageConfigs = sqliteTable("storage_configs", {
   id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   provider: text("provider").notNull(),
   enabled: integer("enabled").notNull(),
   secretId: text("secret_id"),

@@ -57,15 +57,24 @@ export function getAdminStats(): AdminStats {
   const totalFailedOutputs = scalar(
     db.select({ value: count() }).from(generationOutputs).where(eq(generationOutputs.status, "failed")).get()
   );
+  // 仅"实际进入用户口袋"的来源算发放：管理员发放 + 注册赠送 + 兑换码兑换。
+  // generation_refund 是因生成失败/取消而退还，本就是用户的钱，不能算二次发放。
   const grantedRow = db
     .select({ value: sql<number>`COALESCE(SUM(${creditTransactions.amount}), 0)` })
     .from(creditTransactions)
-    .where(sql`${creditTransactions.amount} > 0`)
+    .where(
+      and(
+        sql`${creditTransactions.amount} > 0`,
+        inArray(creditTransactions.type, ["admin_grant", "registration_bonus", "redeem_code"])
+      )
+    )
     .get();
+  // 实际生成消耗 = |reserve 总额| - refund 总额；
+  // admin_revoke 单独算"扣回"，不混进生成消耗。
   const consumedRow = db
     .select({ value: sql<number>`COALESCE(SUM(-${creditTransactions.amount}), 0)` })
     .from(creditTransactions)
-    .where(sql`${creditTransactions.amount} < 0`)
+    .where(inArray(creditTransactions.type, ["generation_reserve", "generation_refund"]))
     .get();
   const totalRedeemCodes = scalar(db.select({ value: count() }).from(redeemCodes).get());
   const totalErrors24h = scalar(

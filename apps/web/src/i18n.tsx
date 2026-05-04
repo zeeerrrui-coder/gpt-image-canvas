@@ -186,12 +186,12 @@ const commonApiErrorMessages: Record<Locale, Record<string, string>> = {
 };
 
 const zhMessages = {
-  appCanvasAria: "gpt-image-canvas 创作画布",
+  appCanvasAria: "青云生图创作画布",
   appGalleryLoading: "正在载入画廊...",
-  appTagline: "本地 AI 图像画布",
+  appTagline: "AI 图像创作画布",
   authStatusLoadFailed: "无法读取图像服务登录状态。",
   autosaveFailed: "自动保存失败，当前画布已保留，请稍后继续编辑。",
-  canvasLoadingTitle: "正在载入 gpt-image-canvas",
+  canvasLoadingTitle: "正在载入青云生图",
   codexCloseLogin: "关闭 Codex 登录",
   codexCodeExpires: ({ time }: { time: string }) => `代码将在 ${time} 过期。`,
   codexCopyCode: "复制代码",
@@ -505,12 +505,12 @@ type CatalogShape<T extends Record<string, MessageValue>> = {
 type I18nMessages = CatalogShape<typeof zhMessages>;
 
 const enMessages: I18nMessages = {
-  appCanvasAria: "gpt-image-canvas creative canvas",
+  appCanvasAria: "Qingyun Sheng Tu creative canvas",
   appGalleryLoading: "Loading Gallery...",
-  appTagline: "Local AI image canvas",
+  appTagline: "AI image canvas",
   authStatusLoadFailed: "Unable to read image service sign-in status.",
   autosaveFailed: "Autosave failed. Your current canvas is preserved; keep editing and try again later.",
-  canvasLoadingTitle: "Loading gpt-image-canvas",
+  canvasLoadingTitle: "Loading Qingyun Sheng Tu",
   codexCloseLogin: "Close Codex login",
   codexCodeExpires: ({ time }) => `Code expires at ${time}.`,
   codexCopyCode: "Copy code",

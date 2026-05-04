@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS assets (
 
 CREATE TABLE IF NOT EXISTS storage_configs (
   id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   provider TEXT NOT NULL,
   enabled INTEGER NOT NULL,
   secret_id TEXT,
@@ -114,6 +115,8 @@ CREATE TABLE IF NOT EXISTS storage_configs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS storage_configs_user_id_idx ON storage_configs(user_id);
 
 CREATE TABLE IF NOT EXISTS provider_configs (
   id TEXT PRIMARY KEY NOT NULL,
@@ -284,6 +287,7 @@ ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
 ensureColumn("provider_configs", "active_profile_id", "active_profile_id TEXT");
 ensureColumn("image_generation_jobs", "credit_per_image", "credit_per_image INTEGER NOT NULL DEFAULT 1");
+ensureColumn("storage_configs", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 ensureColumn("generation_records", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 
 backfillGenerationReferenceAssets();

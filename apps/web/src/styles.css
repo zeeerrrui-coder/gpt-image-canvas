@@ -3348,6 +3348,56 @@ a:focus-visible {
   transform: rotate(-10deg);
 }
 
+.brand-name--zh {
+  font-family: "Noto Serif SC", "Songti SC", "Source Han Serif", serif;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.brand-name__zh {
+  background: linear-gradient(100deg, #2563eb 0%, #0ea5e9 50%, #0d9488 100%);
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+
+.cloud-storage-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 2rem;
+  padding: 0 0.7rem;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.cloud-storage-toggle--off {
+  border: 1px dashed #cbd5e1;
+  background: #ffffff;
+  color: #64748b;
+}
+
+.cloud-storage-toggle--off:hover {
+  border-color: #0ea5e9;
+  background: #f0f9ff;
+  color: #0369a1;
+}
+
+.cloud-storage-toggle--on {
+  border: 1px solid #0ea5e9;
+  background: linear-gradient(135deg, #e0f2fe, #cffafe);
+  color: #0369a1;
+  box-shadow: 0 0 0 3px rgb(14 165 233 / 0.12);
+}
+
+.cloud-storage-toggle--on:hover {
+  background: linear-gradient(135deg, #cffafe, #a5f3fc);
+}
+
 .brand-tagline {
   margin-top: 0.33rem;
   color: var(--muted-ink);

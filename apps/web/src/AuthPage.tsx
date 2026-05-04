@@ -76,7 +76,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         <div className="auth-panel__brand">
           <ImageIcon className="size-6" aria-hidden="true" />
           <div>
-            <h1 id="auth-title">图像画布</h1>
+            <h1 id="auth-title">青云生图</h1>
             <p>登录后使用画布和画廊。新账号需要管理员发放积分后才能生成图片。</p>
           </div>
         </div>

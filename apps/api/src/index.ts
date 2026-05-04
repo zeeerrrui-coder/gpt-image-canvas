@@ -100,7 +100,7 @@ import {
 import { rm } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { CosAssetStorageAdapter } from "./asset-storage.js";
-import { getActiveCosStorageConfig } from "./storage-config.js";
+import { getActiveCosStorageConfigForUser, purgeLegacyGlobalStorageConfigs } from "./storage-config.js";
 import {
   createLocalProfile,
   deleteLocalProfile,
@@ -134,6 +134,10 @@ export async function bootstrap(): Promise<void> {
   const recoveredJobs = recoverInterruptedJobs();
   if (recoveredJobs > 0) {
     console.warn(`Recovered ${recoveredJobs} interrupted image jobs (refunded credits).`);
+  }
+  const purgedLegacy = purgeLegacyGlobalStorageConfigs();
+  if (purgedLegacy > 0) {
+    console.warn(`Cleared ${purgedLegacy} legacy global storage_configs row(s) (cloud storage is now per-user).`);
   }
 }
 
@@ -836,18 +840,18 @@ app.delete("/api/gallery/:outputId", async (c) => {
 });
 
 app.get("/api/storage/config", async (c) => {
-  const admin = await requireAdmin(c);
-  if (!admin.ok) {
-    return admin.response;
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
   }
 
-  return c.json(getStorageConfig());
+  return c.json(getStorageConfig(user.user.id));
 });
 
 app.put("/api/storage/config", async (c) => {
-  const admin = await requireAdmin(c);
-  if (!admin.ok) {
-    return admin.response;
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
   }
 
   const payload = await readJson(c.req.raw);
@@ -861,16 +865,16 @@ app.put("/api/storage/config", async (c) => {
   }
 
   try {
-    return c.json(await saveStorageConfig(parsed.value));
+    return c.json(await saveStorageConfig(user.user.id, parsed.value));
   } catch (error) {
     return c.json(errorResponse("storage_config_error", errorToMessage(error)), 400);
   }
 });
 
 app.post("/api/storage/config/test", async (c) => {
-  const admin = await requireAdmin(c);
-  if (!admin.ok) {
-    return admin.response;
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
   }
 
   const payload = await readJson(c.req.raw);
@@ -883,7 +887,7 @@ app.post("/api/storage/config/test", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  return c.json(await testStorageConfig(parsed.value));
+  return c.json(await testStorageConfig(user.user.id, parsed.value));
 });
 
 app.get("/api/assets/:id/preview", async (c) => {
@@ -1091,7 +1095,7 @@ app.delete("/api/generations/:generationId", async (c) => {
     void rm(filePath, { force: true }).catch(() => undefined);
   }
   if (result.cloudObjects.length > 0) {
-    const cosConfig = getActiveCosStorageConfig();
+    const cosConfig = getActiveCosStorageConfigForUser(user.user.id);
     if (cosConfig) {
       const adapter = new CosAssetStorageAdapter(cosConfig);
       for (const location of result.cloudObjects) {

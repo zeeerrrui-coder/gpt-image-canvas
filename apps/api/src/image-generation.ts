@@ -31,7 +31,7 @@ import {
 } from "./asset-storage.js";
 import { runtimePaths } from "./runtime.js";
 import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "./schema.js";
-import { getActiveCosStorageConfig } from "./storage-config.js";
+import { getActiveCosStorageConfigForUser } from "./storage-config.js";
 
 const BATCH_CONCURRENCY = 4;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -281,7 +281,7 @@ export async function readStoredAsset(assetId: string, userId: string): Promise<
       bytes: await localAssetStorage.getObject({ filePath: file.filePath })
     };
   } catch {
-    const bytes = await readCloudAsset(file.cloud);
+    const bytes = await readCloudAsset(file.cloud, userId);
     if (!bytes) {
       return undefined;
     }
@@ -422,6 +422,7 @@ async function saveProviderImage(
 
   await localAssetStorage.putObject({ filePath, bytes });
   const cloudStorage = await saveAssetToConfiguredCloud({
+    userId,
     fileName,
     bytes,
     mimeType,
@@ -578,12 +579,13 @@ function toGenerationOutput(output: BatchOutputResult): GenerationOutput {
 }
 
 async function saveAssetToConfiguredCloud(input: {
+  userId: string;
   fileName: string;
   bytes: Buffer;
   mimeType: string;
   createdAt: string;
 }): Promise<AssetCloudStorageRecord | undefined> {
-  const config = getActiveCosStorageConfig();
+  const config = getActiveCosStorageConfigForUser(input.userId);
   if (!config) {
     return undefined;
   }
@@ -620,9 +622,12 @@ async function saveAssetToConfiguredCloud(input: {
   }
 }
 
-async function readCloudAsset(location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
-  const config = getActiveCosStorageConfig();
-  if (!location || !config) {
+async function readCloudAsset(location: CosAssetLocation | undefined, userId: string): Promise<Buffer | undefined> {
+  if (!location) {
+    return undefined;
+  }
+  const config = getActiveCosStorageConfigForUser(userId);
+  if (!config) {
     return undefined;
   }
 
