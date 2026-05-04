@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type {
   GeneratedAsset,
   GalleryImageItem,
@@ -128,6 +128,139 @@ export function getGalleryImages(userId: string): GalleryResponse {
       asset: toGeneratedAsset(asset)
     })).filter((item): item is GalleryImageItem => Boolean(item.asset))
   };
+}
+
+export function getGenerationRecordById(generationId: string, userId: string): ApiGenerationRecord | null {
+  try {
+    const record = db.select().from(generationRecords).where(eq(generationRecords.id, generationId)).get();
+    if (!record || record.userId !== userId) {
+      return null;
+    }
+
+    const outputs = db.select().from(generationOutputs).where(eq(generationOutputs.generationId, generationId)).orderBy(generationOutputs.createdAt).all();
+    const referenceRows = db
+      .select()
+      .from(generationReferenceAssets)
+      .where(eq(generationReferenceAssets.generationId, generationId))
+      .all()
+      .sort((a, b) => a.position - b.position);
+    const assetIds = outputs.flatMap((output) => (output.assetId ? [output.assetId] : []));
+    const assetRows = assetIds.length > 0 ? db.select().from(assets).where(inArray(assets.id, assetIds)).all() : [];
+    const assetById = new Map(assetRows.map((asset) => [asset.id, asset]));
+
+    const mappedOutputs = outputs.map((output) => ({
+      id: output.id,
+      status: output.status as OutputStatus,
+      asset: output.assetId ? toGeneratedAsset(assetById.get(output.assetId)) : undefined,
+      error: output.error ?? undefined
+    }));
+
+    const referenceAssetIds = referenceRows.map((row) => row.assetId);
+
+    return {
+      id: record.id,
+      mode: record.mode as ImageMode,
+      prompt: record.prompt,
+      effectivePrompt: record.effectivePrompt,
+      presetId: record.presetId,
+      size: { width: record.width, height: record.height },
+      quality: record.quality as ImageQuality,
+      outputFormat: record.outputFormat as OutputFormat,
+      count: record.count,
+      status: record.status as GenerationStatus,
+      error: record.error ?? undefined,
+      referenceAssetIds: referenceAssetIds.length > 0 ? referenceAssetIds : undefined,
+      referenceAssetId: record.referenceAssetId ?? undefined,
+      createdAt: record.createdAt,
+      outputs: mappedOutputs
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface DeletedAssetCloudInfo {
+  bucket: string;
+  region: string;
+  objectKey: string;
+}
+
+export function deleteGenerationRecord(generationId: string, userId: string): {
+  ok: boolean;
+  assetFilePaths: string[];
+  cloudObjects: DeletedAssetCloudInfo[];
+} {
+  const record = db.select().from(generationRecords).where(eq(generationRecords.id, generationId)).get();
+  if (!record || record.userId !== userId) {
+    return { ok: false, assetFilePaths: [], cloudObjects: [] };
+  }
+
+  const outputs = db.select().from(generationOutputs).where(eq(generationOutputs.generationId, generationId)).all();
+  const candidateAssetIds = [
+    ...new Set(outputs.flatMap((output) => (output.assetId ? [output.assetId] : [])))
+  ];
+
+  let assetFilePaths: string[] = [];
+  let cloudObjects: DeletedAssetCloudInfo[] = [];
+
+  db.transaction((tx) => {
+    // Cascade 在升级 DB 上不一定生效（ALTER TABLE FK 限制），显式删 outputs/refs。
+    tx.delete(generationOutputs).where(eq(generationOutputs.generationId, generationId)).run();
+    tx.delete(generationReferenceAssets).where(eq(generationReferenceAssets.generationId, generationId)).run();
+    tx.delete(generationRecords).where(eq(generationRecords.id, generationId)).run();
+
+    if (candidateAssetIds.length === 0) {
+      return;
+    }
+
+    // 过滤掉仍被其他 generation_records / generation_reference_assets 引用的 asset
+    // （比如用户把生成结果作为参考图复用进了下一次生成）
+    const stillReferenced = new Set<string>();
+    for (const row of tx
+      .select({ assetId: generationRecords.referenceAssetId })
+      .from(generationRecords)
+      .where(and(inArray(generationRecords.referenceAssetId, candidateAssetIds), ne(generationRecords.id, generationId)))
+      .all()) {
+      if (row.assetId) {
+        stillReferenced.add(row.assetId);
+      }
+    }
+    for (const row of tx
+      .select({ assetId: generationReferenceAssets.assetId })
+      .from(generationReferenceAssets)
+      .where(and(inArray(generationReferenceAssets.assetId, candidateAssetIds), ne(generationReferenceAssets.generationId, generationId)))
+      .all()) {
+      stillReferenced.add(row.assetId);
+    }
+    for (const row of tx
+      .select({ assetId: generationOutputs.assetId })
+      .from(generationOutputs)
+      .where(inArray(generationOutputs.assetId, candidateAssetIds))
+      .all()) {
+      if (row.assetId) {
+        stillReferenced.add(row.assetId);
+      }
+    }
+
+    const deletableAssetIds = candidateAssetIds.filter((id) => !stillReferenced.has(id));
+    if (deletableAssetIds.length === 0) {
+      return;
+    }
+
+    const assetRows = tx.select().from(assets).where(inArray(assets.id, deletableAssetIds)).all();
+    assetFilePaths = assetRows.map((asset) => asset.relativePath);
+    cloudObjects = assetRows
+      .filter((asset) => asset.cloudProvider === "cos" && asset.cloudStatus === "uploaded" && asset.cloudBucket && asset.cloudRegion && asset.cloudObjectKey)
+      .map((asset) => ({
+        bucket: asset.cloudBucket as string,
+        region: asset.cloudRegion as string,
+        objectKey: asset.cloudObjectKey as string
+      }));
+
+    tx.delete(assets).where(inArray(assets.id, deletableAssetIds)).run();
+  });
+
+  return { ok: true, assetFilePaths, cloudObjects };
 }
 
 export function deleteGalleryOutput(outputId: string, userId: string): boolean {

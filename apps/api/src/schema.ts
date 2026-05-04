@@ -112,6 +112,21 @@ export const redeemCodeUses = sqliteTable("redeem_code_uses", {
   createdAt: text("created_at").notNull()
 });
 
+export const imageGenerationJobs = sqliteTable("image_generation_jobs", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mode: text("mode").notNull(),
+  status: text("status").notNull(),
+  inputJson: text("input_json").notNull(),
+  reservedAmount: integer("reserved_amount").notNull(),
+  creditPerImage: integer("credit_per_image").notNull(),
+  generationRecordId: text("generation_record_id").references(() => generationRecords.id, { onDelete: "set null" }),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
 export const errorLogs = sqliteTable("error_logs", {
   id: text("id").primaryKey(),
   path: text("path").notNull(),

@@ -743,6 +743,7 @@ interface AdminStats {
   activeUsersLast7d: number;
   totalGenerations: number;
   generationsLast7d: number;
+  totalFailedJobs: number;
   totalSucceededOutputs: number;
   totalFailedOutputs: number;
   totalCreditsGranted: number;
@@ -795,8 +796,9 @@ function StatsPanel({ onError }: { onError: (text: string) => void }) {
       <div className="stats-grid">
         <StatCard label="总用户" value={stats.totalUsers} />
         <StatCard label="近 7 天活跃" value={stats.activeUsersLast7d} />
-        <StatCard label="总生成次数" value={stats.totalGenerations} hint={`近 7 天 ${stats.generationsLast7d}`} />
-        <StatCard label="成功 / 失败" value={`${stats.totalSucceededOutputs} / ${stats.totalFailedOutputs}`} hint={`失败率 ${failureRate}%`} />
+        <StatCard label="生成任务总数" value={stats.totalGenerations} hint={`近 7 天 ${stats.generationsLast7d}`} />
+        <StatCard label="失败/取消任务" value={stats.totalFailedJobs} />
+        <StatCard label="单张图成功 / 失败" value={`${stats.totalSucceededOutputs} / ${stats.totalFailedOutputs}`} hint={`失败率 ${failureRate}%`} />
         <StatCard label="积分发放 / 消耗" value={`${stats.totalCreditsGranted} / ${stats.totalCreditsConsumed}`} />
         <StatCard label="兑换码总数" value={stats.totalRedeemCodes} />
         <StatCard label="24h 错误数" value={stats.totalErrors24h} />

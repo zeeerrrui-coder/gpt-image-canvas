@@ -1,14 +1,13 @@
-import { count, eq, gte, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, sql } from "drizzle-orm";
 import { statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "./database.js";
 import { runtimePaths } from "./runtime.js";
 import {
-  assets,
   creditTransactions,
   errorLogs,
   generationOutputs,
-  generationRecords,
+  imageGenerationJobs,
   redeemCodes,
   sessions,
   users
@@ -19,6 +18,7 @@ export interface AdminStats {
   activeUsersLast7d: number;
   totalGenerations: number;
   generationsLast7d: number;
+  totalFailedJobs: number;
   totalSucceededOutputs: number;
   totalFailedOutputs: number;
   totalCreditsGranted: number;
@@ -40,9 +40,16 @@ export function getAdminStats(): AdminStats {
       .where(gte(sessions.createdAt, since7d))
       .get()
   );
-  const totalGenerations = scalar(db.select({ value: count() }).from(generationRecords).get());
+  const totalGenerations = scalar(db.select({ value: count() }).from(imageGenerationJobs).get());
   const generationsLast7d = scalar(
-    db.select({ value: count() }).from(generationRecords).where(gte(generationRecords.createdAt, since7d)).get()
+    db.select({ value: count() }).from(imageGenerationJobs).where(gte(imageGenerationJobs.createdAt, since7d)).get()
+  );
+  const totalFailedJobs = scalar(
+    db
+      .select({ value: count() })
+      .from(imageGenerationJobs)
+      .where(and(inArray(imageGenerationJobs.status, ["failed", "cancelled"])))
+      .get()
   );
   const totalSucceededOutputs = scalar(
     db.select({ value: count() }).from(generationOutputs).where(eq(generationOutputs.status, "succeeded")).get()
@@ -70,6 +77,7 @@ export function getAdminStats(): AdminStats {
     activeUsersLast7d,
     totalGenerations,
     generationsLast7d,
+    totalFailedJobs,
     totalSucceededOutputs,
     totalFailedOutputs,
     totalCreditsGranted: scalar(grantedRow),

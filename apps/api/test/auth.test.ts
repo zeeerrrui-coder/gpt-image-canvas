@@ -244,7 +244,24 @@ test("provider failures do not deduct credits", async () => {
       count: 1
     })
   });
-  assert.notEqual(response.status, 200);
+  assert.equal(response.status, 200);
+  const submitBody = (await response.json()) as { jobId: string };
+  assert.ok(submitBody.jobId);
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const jobResponse = await app.request(`/api/images/jobs/${submitBody.jobId}`, {
+      headers: { Cookie: cookie }
+    });
+    assert.equal(jobResponse.status, 200);
+    const jobBody = (await jobResponse.json()) as { job: { status: string } };
+    if (jobBody.job.status === "failed" || jobBody.job.status === "cancelled") {
+      break;
+    }
+    if (jobBody.job.status === "succeeded" || jobBody.job.status === "partial") {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
 
   const meResponse = await app.request("/api/auth/me", {
     headers: {

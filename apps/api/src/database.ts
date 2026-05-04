@@ -148,6 +148,24 @@ CREATE TABLE IF NOT EXISTS redeem_code_uses (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS image_generation_jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  reserved_amount INTEGER NOT NULL,
+  credit_per_image INTEGER NOT NULL DEFAULT 1,
+  generation_record_id TEXT REFERENCES generation_records(id) ON DELETE SET NULL,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS image_generation_jobs_user_id_idx ON image_generation_jobs(user_id);
+CREATE INDEX IF NOT EXISTS image_generation_jobs_status_idx ON image_generation_jobs(status);
+
 CREATE TABLE IF NOT EXISTS error_logs (
   id TEXT PRIMARY KEY NOT NULL,
   path TEXT NOT NULL,
@@ -265,6 +283,7 @@ ensureColumn("provider_configs", "local_base_url", "local_base_url TEXT");
 ensureColumn("provider_configs", "local_model", "local_model TEXT");
 ensureColumn("provider_configs", "local_timeout_ms", "local_timeout_ms INTEGER");
 ensureColumn("provider_configs", "active_profile_id", "active_profile_id TEXT");
+ensureColumn("image_generation_jobs", "credit_per_image", "credit_per_image INTEGER NOT NULL DEFAULT 1");
 ensureColumn("generation_records", "user_id", "user_id TEXT REFERENCES users(id) ON DELETE CASCADE");
 
 backfillGenerationReferenceAssets();

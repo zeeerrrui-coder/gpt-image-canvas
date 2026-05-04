@@ -5,6 +5,8 @@ import {
   Cloud,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   ExternalLink,
   ImageIcon,
   KeyRound,
@@ -16,6 +18,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  Trash2,
   UserCircle2,
   X,
   XCircle
@@ -793,6 +796,66 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
 
 function generatedAssetsForRecord(record: GenerationRecord): GeneratedAsset[] {
   return record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset] : []));
+}
+
+interface ImageJobView {
+  id: string;
+  mode: "generate" | "edit";
+  status: "pending" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  record: GenerationRecord | null;
+}
+
+async function pollImageJob(jobId: string, signal: AbortSignal): Promise<ImageJobView> {
+  const initialDelayMs = 1500;
+  const maxDelayMs = 4000;
+  const maxAttempts = 600; // ~40 分钟兜底；finally 一定会跑，正常情况下早就返回了
+  let delayMs = initialDelayMs;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (signal.aborted) {
+      throw new DOMException("Aborted.", "AbortError");
+    }
+
+    const response = await fetch(`/api/images/jobs/${encodeURIComponent(jobId)}`, { signal });
+    if (!response.ok) {
+      throw new Error(`生成状态查询失败，状态 ${response.status}。`);
+    }
+    const body = (await response.json()) as { job?: ImageJobView };
+    if (!body.job) {
+      throw new Error("生成任务返回内容无法识别。");
+    }
+    if (body.job.status !== "pending" && body.job.status !== "running") {
+      return body.job;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, delayMs);
+      const onAbort = (): void => {
+        cleanup();
+        reject(new DOMException("Aborted.", "AbortError"));
+      };
+      const cleanup = (): void => {
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.3));
+  }
+
+  throw new Error("生成任务超时未结束，请稍后到画廊查看或联系管理员。");
 }
 
 async function preloadGenerationRecordPreviews(record: GenerationRecord, signal: AbortSignal): Promise<void> {
@@ -1936,6 +1999,7 @@ export function App() {
   const [generationWarning, setGenerationWarning] = useState("");
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const [hiddenHistoryIds, setHiddenHistoryIds] = useState<Set<string>>(new Set());
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
@@ -2771,7 +2835,7 @@ export function App() {
         }
       }
 
-      const response = await fetch(requestMode === "reference" ? "/api/images/edit" : "/api/images/generate", {
+      const submitResponse = await fetch(requestMode === "reference" ? "/api/images/edit" : "/api/images/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -2780,22 +2844,37 @@ export function App() {
         signal: controller.signal
       });
 
-      if (!response.ok) {
-        throw new Error(await readErrorMessage(response, locale, t));
+      if (!submitResponse.ok) {
+        throw new Error(await readErrorMessage(submitResponse, locale, t));
       }
 
-      const body = (await response.json()) as unknown;
-      if (!isGenerationResponse(body)) {
+      const submitBody = (await submitResponse.json()) as { jobId?: string };
+      if (!submitBody.jobId) {
         throw new Error(t("generationInvalidResponse"));
       }
-      if (body.user) {
-        setCurrentUser(body.user);
-      }
+      const jobId = submitBody.jobId;
+      activeGenerationsRef.current.get(requestId)?.controller.signal.addEventListener("abort", () => {
+        void fetch(`/api/images/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }).catch(() => undefined);
+      });
 
+      const finalJob = await pollImageJob(jobId, controller.signal);
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
 
+      const meResponse = await fetch("/api/auth/me", { signal: controller.signal }).catch(() => undefined);
+      if (meResponse?.ok) {
+        const meBody = (await meResponse.json()) as { user?: AppUser | null };
+        if (meBody.user) {
+          setCurrentUser(meBody.user);
+        }
+      }
+
+      if (!finalJob.record) {
+        throw new Error(finalJob.errorMessage ?? t("generationInvalidResponse"));
+      }
+
+      const body = { record: finalJob.record };
       await preloadGenerationRecordPreviews(body.record, controller.signal);
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
@@ -3035,6 +3114,113 @@ export function App() {
     navigateToRoute("canvas");
     if (isMobileDrawer) {
       setIsAiPanelOpen(true);
+    }
+  }
+
+  useEffect(() => {
+    if (!isProjectLoaded || generationHistory.length === 0) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const nextHidden = new Set<string>();
+    for (const record of generationHistory) {
+      const shapeIds = getCanvasShapesForRecord(record);
+      if (shapeIds.length === 0) {
+        continue;
+      }
+      const allHidden = shapeIds.every((id) => {
+        const shape = editor.getShape(id);
+        return shape && shape.opacity === 0;
+      });
+      if (allHidden) {
+        nextHidden.add(record.id);
+      }
+    }
+    setHiddenHistoryIds((current) => {
+      if (current.size === nextHidden.size && Array.from(current).every((id) => nextHidden.has(id))) {
+        return current;
+      }
+      return nextHidden;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isProjectLoaded, generationHistory.length]);
+
+  function getCanvasShapesForRecord(record: GenerationRecord): TLShapeId[] {
+    const editor = editorRef.current;
+    if (!editor) {
+      return [];
+    }
+    const assetIds = new Set(
+      record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset.id] : []))
+    );
+    if (assetIds.size === 0) {
+      return [];
+    }
+    const matched: TLShapeId[] = [];
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type !== "image") {
+        continue;
+      }
+      const imageShape = shape as TLImageShape;
+      const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
+      const sourceUrl = getImageSourceUrl(imageShape, asset);
+      const localAssetId = getLocalAssetId(asset, sourceUrl);
+      if (localAssetId && assetIds.has(localAssetId)) {
+        matched.push(imageShape.id);
+      }
+    }
+    return matched;
+  }
+
+  function toggleHistoryRecordVisibility(record: GenerationRecord): void {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const shapeIds = getCanvasShapesForRecord(record);
+    const currentlyHidden = hiddenHistoryIds.has(record.id);
+    if (shapeIds.length > 0) {
+      editor.run(() => {
+        editor.updateShapes(shapeIds.map((id) => ({ id, type: "image", isLocked: !currentlyHidden, opacity: currentlyHidden ? 1 : 0 } as TLShapePartial<TLImageShape>)));
+      });
+    }
+    setHiddenHistoryIds((current) => {
+      const next = new Set(current);
+      if (currentlyHidden) {
+        next.delete(record.id);
+      } else {
+        next.add(record.id);
+      }
+      return next;
+    });
+  }
+
+  async function deleteHistoryRecord(record: GenerationRecord): Promise<void> {
+    if (!window.confirm(t("historyDeleteConfirm"))) {
+      return;
+    }
+    const editor = editorRef.current;
+    const shapeIds = editor ? getCanvasShapesForRecord(record) : [];
+    if (editor && shapeIds.length > 0) {
+      editor.deleteShapes(shapeIds);
+    }
+    setGenerationHistory((history) => history.filter((item) => item.id !== record.id));
+    setHiddenHistoryIds((current) => {
+      const next = new Set(current);
+      next.delete(record.id);
+      return next;
+    });
+    try {
+      const response = await fetch(`/api/generations/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const message = await readErrorMessage(response, locale, t).catch(() => t("historyDeleteHttpError", { status: response.status }));
+        setGenerationError(message);
+      }
+    } catch {
+      setGenerationError(t("historyDeleteFailed"));
     }
   }
 
@@ -3602,6 +3788,7 @@ export function App() {
                   const isRecordRunning = record.status === "running" && Boolean(activeTask);
                   const cloudFailedCount = cloudFailureCount(record);
                   const cloudFailureMessage = firstCloudFailureMessage(record);
+                  const isRecordHidden = hiddenHistoryIds.has(record.id);
 
                   return (
                     <article
@@ -3704,6 +3891,24 @@ export function App() {
                             <Download className="size-4" aria-hidden="true" />
                           </button>
                         )}
+                        <button
+                          className="history-icon-action"
+                          type="button"
+                          data-testid="history-toggle-visibility"
+                          title={isRecordHidden ? t("historyShowOnCanvas") : t("historyHideOnCanvas")}
+                          onClick={() => toggleHistoryRecordVisibility(record)}
+                        >
+                          {isRecordHidden ? <Eye className="size-4" aria-hidden="true" /> : <EyeOff className="size-4" aria-hidden="true" />}
+                        </button>
+                        <button
+                          className="history-icon-action history-icon-action--danger"
+                          type="button"
+                          data-testid="history-delete"
+                          title={t("historyDeleteTitle")}
+                          onClick={() => void deleteHistoryRecord(record)}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </button>
                       </div>
                     </article>
                   );

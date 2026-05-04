@@ -25,6 +25,13 @@ import { listCreditTransactions } from "./credit-history-service.js";
 import { createRedeemCode, deleteRedeemCode, listRedeemCodes, redeemCode } from "./redeem-code-service.js";
 import { getAdminStats, listErrorLogs, recordErrorLog } from "./admin-stats-service.js";
 import {
+  cancelImageJob,
+  createImageJob,
+  getImageJobView,
+  recoverInterruptedJobs,
+  startImageJob
+} from "./image-job-service.js";
+import {
   checkAuthRateLimit,
   clearAuthFailures,
   recordAuthFailure
@@ -82,7 +89,18 @@ import {
   runReferenceImageGeneration,
   runTextToImageGeneration
 } from "./image-generation.js";
-import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
+import {
+  deleteGalleryOutput,
+  deleteGenerationRecord,
+  getGalleryImages,
+  getGenerationRecordById,
+  getProjectState,
+  saveProjectSnapshot
+} from "./project-store.js";
+import { rm } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
+import { CosAssetStorageAdapter } from "./asset-storage.js";
+import { getActiveCosStorageConfig } from "./storage-config.js";
 import {
   createLocalProfile,
   deleteLocalProfile,
@@ -109,6 +127,18 @@ interface ProjectPayload {
 
 export const app = new Hono();
 
+export async function bootstrap(): Promise<void> {
+  await ensureBootstrapAdmin().catch((error) => {
+    console.error("Admin bootstrap failed.", error);
+  });
+  const recoveredJobs = recoverInterruptedJobs();
+  if (recoveredJobs > 0) {
+    console.warn(`Recovered ${recoveredJobs} interrupted image jobs (refunded credits).`);
+  }
+}
+
+// Backward-compat: existing tests expect ensureBootstrapAdmin to run on import.
+// Recovery only runs when this file is the entry point (see isMainModule branch below).
 void ensureBootstrapAdmin().catch((error) => {
   console.error("Admin bootstrap failed.", error);
 });
@@ -979,39 +1009,22 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const creditPerImage = creditCostForSize(parsed.value.size, getCreditCostConfig());
-  let reservedAmount = 0;
   try {
-    reserveGenerationCredits({
+    const job = createImageJob({
       userId: user.user.id,
-      requestedCount: parsed.value.count,
-      creditPerImage
+      mode: "generate",
+      payload: parsed.value,
+      creditCosts: getCreditCostConfig()
     });
-    reservedAmount = parsed.value.count * creditPerImage;
-    const provider = await createConfiguredImageProvider(c.req.raw.signal);
-    const result = await runTextToImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
-    const successfulCount = successfulOutputCount(result.record);
-    const updatedUser = refundGenerationCredits({
-      userId: user.user.id,
-      generationId: result.record.id,
-      amount: (parsed.value.count - successfulCount) * creditPerImage
-    });
-    reservedAmount = 0;
-    return c.json({ ...result, user: updatedUser });
+    startImageJob(job.jobId, user.user.id);
+    return c.json({ jobId: job.jobId, status: "pending", reservedAmount: job.reservedAmount });
   } catch (error) {
-    if (reservedAmount > 0) {
-      refundGenerationCredits({
-        userId: user.user.id,
-        amount: reservedAmount
-      });
-    }
     if (error instanceof CreditError) {
       return errorJson(error.code, error.message, error.status);
     }
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
     }
-
     throw error;
   }
 });
@@ -1032,40 +1045,80 @@ app.post("/api/images/edit", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  let reservedCount = 0;
   try {
-    reserveGenerationCredits({
+    const job = createImageJob({
       userId: user.user.id,
-      requestedCount: parsed.value.count
+      mode: "edit",
+      payload: parsed.value,
+      creditCosts: getCreditCostConfig()
     });
-    const editCreditPerImage = creditCostForSize(parsed.value.size, getCreditCostConfig());
-    reservedCount = parsed.value.count;
-    const provider = await createConfiguredImageProvider(c.req.raw.signal);
-    const result = await runReferenceImageGeneration(parsed.value, provider, user.user.id, c.req.raw.signal);
-    const successfulCount = successfulOutputCount(result.record);
-    const updatedUser = refundGenerationCredits({
-      userId: user.user.id,
-      generationId: result.record.id,
-      amount: (parsed.value.count - successfulCount) * editCreditPerImage
-    });
-    reservedCount = 0;
-    return c.json({ ...result, user: updatedUser });
+    startImageJob(job.jobId, user.user.id);
+    return c.json({ jobId: job.jobId, status: "pending", reservedAmount: job.reservedAmount });
   } catch (error) {
-    if (reservedCount > 0) {
-      refundGenerationCredits({
-        userId: user.user.id,
-        amount: reservedCount
-      });
-    }
     if (error instanceof CreditError) {
       return errorJson(error.code, error.message, error.status);
     }
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
     }
-
     throw error;
   }
+});
+
+app.get("/api/images/jobs/:jobId", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+  const view = getImageJobView(c.req.param("jobId"), user.user.id, (id) => getGenerationRecordById(id, user.user.id));
+  if (!view) {
+    return c.json(errorResponse("not_found", "找不到该生成任务。"), 404);
+  }
+  return c.json({ job: view });
+});
+
+app.delete("/api/generations/:generationId", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+  const result = deleteGenerationRecord(c.req.param("generationId"), user.user.id);
+  if (!result.ok) {
+    return c.json(errorResponse("not_found", "找不到该生成记录。"), 404);
+  }
+  for (const relativePath of result.assetFilePaths) {
+    const filePath = resolvePath(runtimePaths.dataDir, relativePath);
+    void rm(filePath, { force: true }).catch(() => undefined);
+  }
+  if (result.cloudObjects.length > 0) {
+    const cosConfig = getActiveCosStorageConfig();
+    if (cosConfig) {
+      const adapter = new CosAssetStorageAdapter(cosConfig);
+      for (const location of result.cloudObjects) {
+        if (location.bucket !== cosConfig.bucket || location.region !== cosConfig.region) {
+          continue;
+        }
+        void adapter
+          .deleteObject({ bucket: location.bucket, region: location.region, key: location.objectKey })
+          .catch((error) => {
+            console.warn(`Failed to delete COS object ${location.objectKey}:`, error instanceof Error ? error.message : error);
+          });
+      }
+    }
+  }
+  return c.json({ ok: true });
+});
+
+app.post("/api/images/jobs/:jobId/cancel", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+  const ok = cancelImageJob(c.req.param("jobId"), user.user.id);
+  if (!ok) {
+    return c.json(errorResponse("invalid_request", "任务无法取消（可能已结束）。"), 400);
+  }
+  return c.json({ ok: true });
 });
 
 const webDistRoot = relative(process.cwd(), runtimePaths.webDistDir) || ".";
@@ -2275,6 +2328,7 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
+  void bootstrap();
   const server = serve(
     {
       fetch: app.fetch,
