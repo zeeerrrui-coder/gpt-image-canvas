@@ -262,6 +262,8 @@ const zhMessages = {
   galleryWorkCount: "张作品",
   galleryWorkSort: "最新生成",
   generationActiveTasks: ({ count }: { count: number }) => `当前 ${count} 个任务正在生成到画布，可继续下发新任务。`,
+  generationQueueWaiting: ({ ahead }: { ahead: number }) =>
+    ahead === 0 ? "排队中，即将开始生成。" : `排队中，前面约 ${ahead} 个任务。`,
   generationAdvanced: "高级设置",
   generationAllSizes: "全部尺寸",
   generationCancelReference: "取消参考",
@@ -581,6 +583,8 @@ const enMessages: I18nMessages = {
   galleryWorkCount: "works",
   galleryWorkSort: "Latest",
   generationActiveTasks: ({ count }) => `${count} tasks are generating on the canvas. You can submit another task.`,
+  generationQueueWaiting: ({ ahead }) =>
+    ahead === 0 ? "Queued — starting soon." : `Queued — about ${ahead} task${ahead === 1 ? "" : "s"} ahead.`,
   generationAdvanced: "Advanced settings",
   generationAllSizes: "All sizes",
   generationCancelReference: "Cancel reference",

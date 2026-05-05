@@ -209,7 +209,13 @@ type CodexLoginStatus = "idle" | "starting" | "pending" | "authorized" | "expire
 interface PanelStatus {
   tone: PanelStatusTone;
   message: string;
-  testId: "generation-progress" | "generation-message" | "generation-warning" | "validation-message" | "generation-error";
+  testId:
+    | "generation-progress"
+    | "generation-queue"
+    | "generation-message"
+    | "generation-warning"
+    | "validation-message"
+    | "generation-error";
 }
 
 interface GenerationSubmitInput {
@@ -250,6 +256,11 @@ interface ActiveGenerationTask {
   temporaryRecordId: string;
   controller: AbortController;
   placeholderSet: ActiveGenerationPlaceholders;
+  // jobId is set after the server returns it. Stored here so that
+  // user-initiated cancel can call /cancel explicitly. Aborting the controller
+  // alone does NOT send /cancel — that's reserved for cancelGeneration() so a
+  // page unmount/refresh doesn't accidentally kill the server-side job.
+  jobId?: string;
 }
 
 interface StorageConfigFormState {
@@ -811,9 +822,72 @@ interface ImageJobView {
   createdAt: string;
   updatedAt: string;
   record: GenerationRecord | null;
+  // Approximate count of pending jobs ahead of this one (only set when status='pending').
+  // Approximate because per-user fairness can let later jobs leapfrog.
+  queuePositionApprox?: number | null;
 }
 
-async function pollImageJob(jobId: string, signal: AbortSignal): Promise<ImageJobView> {
+// Persisted active-job snapshot. We store enough state in localStorage that a
+// page refresh can re-create the placeholder shapes and resume polling against
+// the in-flight server job. The geometry must be persisted (codex finding #11) —
+// shape IDs alone are not enough to reconstruct the loading UI.
+interface ActiveJobStorageEntry {
+  jobId: string;
+  requestId: number;
+  temporaryRecordId: string;
+  placements: GenerationPlaceholderPlacement[];
+}
+
+const ACTIVE_JOB_LS_PREFIX = "gic_active_image_job";
+
+function activeJobStorageKey(userId: string): string {
+  return `${ACTIVE_JOB_LS_PREFIX}:${userId}`;
+}
+
+function readActiveJobStorage(userId: string): ActiveJobStorageEntry | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(activeJobStorageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActiveJobStorageEntry | null;
+    if (
+      !parsed ||
+      typeof parsed.jobId !== "string" ||
+      typeof parsed.requestId !== "number" ||
+      typeof parsed.temporaryRecordId !== "string" ||
+      !Array.isArray(parsed.placements)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeActiveJobStorage(userId: string, entry: ActiveJobStorageEntry): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(activeJobStorageKey(userId), JSON.stringify(entry));
+  } catch {
+    // Quota/permissions errors — degrade silently (refresh-recovery just won't work this round).
+  }
+}
+
+function clearActiveJobStorage(userId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(activeJobStorageKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
+async function pollImageJob(
+  jobId: string,
+  signal: AbortSignal,
+  onUpdate?: (job: ImageJobView) => void
+): Promise<ImageJobView> {
   const initialDelayMs = 1500;
   const maxDelayMs = 4000;
   const maxAttempts = 600; // ~40 分钟兜底；finally 一定会跑，正常情况下早就返回了
@@ -835,6 +909,7 @@ async function pollImageJob(jobId: string, signal: AbortSignal): Promise<ImageJo
     if (body.job.status !== "pending" && body.job.status !== "running") {
       return body.job;
     }
+    onUpdate?.(body.job);
 
     await new Promise<void>((resolve, reject) => {
       const timer = window.setTimeout(() => {
@@ -1992,12 +2067,15 @@ export function App() {
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
   const [activeGenerationCount, setActiveGenerationCount] = useState(0);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+  const [isEditorMounted, setIsEditorMounted] = useState(false);
   const [projectSnapshot, setProjectSnapshot] = useState<PersistedSnapshot | undefined>();
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
   const [saveError, setSaveError] = useState("");
   const [generationError, setGenerationError] = useState("");
   const [generationMessage, setGenerationMessage] = useState("");
   const [generationWarning, setGenerationWarning] = useState("");
+  // null = unknown / not pending. 0 = next to run. >0 = N tasks ahead.
+  const [generationQueueAhead, setGenerationQueueAhead] = useState<number | null>(null);
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const [hiddenHistoryIds, setHiddenHistoryIds] = useState<Set<string>>(new Set());
@@ -2150,6 +2228,13 @@ export function App() {
 
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
+      if (generationQueueAhead !== null) {
+        return {
+          tone: "progress",
+          message: t("generationQueueWaiting", { ahead: generationQueueAhead }),
+          testId: "generation-queue"
+        };
+      }
       return {
         tone: "progress",
         message: t("generationActiveTasks", { count: activeGenerationCount }),
@@ -2194,6 +2279,7 @@ export function App() {
     activeGenerationCount,
     generationError,
     generationMessage,
+    generationQueueAhead,
     generationWarning,
     isGenerating,
     shouldShowValidation,
@@ -2289,6 +2375,176 @@ export function App() {
       controller.abort();
     };
   }, [currentUser?.id, t]);
+
+  // Reattach to an in-flight generation job that was started before a refresh.
+  // Reads the localStorage entry written by executeGeneration, recreates
+  // placeholders from the persisted geometry, and resumes polling. Runs once
+  // per (user, project, editor) trio after everything is ready.
+  useEffect(() => {
+    if (!currentUser || !isProjectLoaded || !isEditorMounted) {
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const stored = readActiveJobStorage(currentUser.id);
+    if (!stored) {
+      return;
+    }
+    if (activeGenerationsRef.current.has(stored.requestId)) {
+      return;
+    }
+
+    const userId = currentUser.id;
+    let cancelled = false;
+    const cleanupFns: Array<() => void> = [];
+
+    void (async () => {
+      let initialJob: ImageJobView | undefined;
+      try {
+        const response = await fetch(`/api/images/jobs/${encodeURIComponent(stored.jobId)}`);
+        if (!response.ok) {
+          clearActiveJobStorage(userId);
+          return;
+        }
+        const body = (await response.json()) as { job?: ImageJobView };
+        initialJob = body.job;
+      } catch {
+        // Network error — keep the LS entry for the next mount to retry.
+        return;
+      }
+      if (cancelled) return;
+      if (!initialJob) {
+        clearActiveJobStorage(userId);
+        return;
+      }
+      if (initialJob.status !== "pending" && initialJob.status !== "running") {
+        // Server already finalized the job. Nothing to reattach.
+        clearActiveJobStorage(userId);
+        return;
+      }
+
+      // Bump request counter past the stored ID so any new submit gets a fresh one.
+      generationRequestRef.current = Math.max(generationRequestRef.current, stored.requestId);
+
+      const placements = stored.placements;
+      try {
+        editor.createShapes<GenerationPlaceholderShape>(
+          placements.map((placement, index) => ({
+            id: placement.id,
+            type: GENERATION_PLACEHOLDER_TYPE,
+            x: placement.x,
+            y: placement.y,
+            props: {
+              w: placement.width,
+              h: placement.height,
+              targetWidth: placement.targetWidth,
+              targetHeight: placement.targetHeight,
+              status: "loading",
+              error: "",
+              requestId: String(stored.requestId),
+              outputIndex: index
+            }
+          }))
+        );
+      } catch (error) {
+        console.warn("Failed to recreate placeholders for reattached job:", error);
+        clearActiveJobStorage(userId);
+        return;
+      }
+
+      const placeholderSet: ActiveGenerationPlaceholders = {
+        requestId: stored.requestId,
+        placements
+      };
+
+      const controller = new AbortController();
+      activeGenerationsRef.current.set(stored.requestId, {
+        requestId: stored.requestId,
+        temporaryRecordId: stored.temporaryRecordId,
+        controller,
+        placeholderSet,
+        jobId: stored.jobId
+      });
+      setActiveGenerationCount(activeGenerationsRef.current.size);
+      cleanupFns.push(() => {
+        if (!controller.signal.aborted) {
+          controller.abort();
+        }
+      });
+
+      try {
+        const finalJob = await pollImageJob(stored.jobId, controller.signal, (job) => {
+          setGenerationQueueAhead(job.status === "pending" ? job.queuePositionApprox ?? null : null);
+        });
+        if (controller.signal.aborted || !activeGenerationsRef.current.has(stored.requestId)) {
+          return;
+        }
+
+        const meResponse = await fetch("/api/auth/me", { signal: controller.signal }).catch(() => undefined);
+        if (meResponse?.ok) {
+          const meBody = (await meResponse.json()) as { user?: AppUser | null };
+          if (meBody.user) {
+            setCurrentUser(meBody.user);
+          }
+        }
+
+        if (!finalJob.record) {
+          const message = finalJob.errorMessage ?? t("generationInvalidResponse");
+          markGenerationPlaceholdersFailed(editor, placeholderSet, message);
+          setGenerationError(message);
+          return;
+        }
+
+        const record = finalJob.record;
+        await preloadGenerationRecordPreviews(record, controller.signal);
+        if (controller.signal.aborted || !activeGenerationsRef.current.has(stored.requestId)) {
+          return;
+        }
+
+        setGenerationHistory((history) =>
+          [record, ...history.filter((existing) => existing.id !== record.id)].slice(0, 20)
+        );
+        const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, record, t);
+        const failedCount =
+          record.outputs.filter((output) => output.status === "failed").length +
+          Math.max(0, placeholderSet.placements.length - record.outputs.length);
+        const cloudFailedCount = cloudFailureCount(record);
+        if (insertedCount > 0) {
+          if (cloudFailedCount > 0 || failedCount > 0) {
+            setGenerationWarning(generationWarningMessage(record, insertedCount, failedCount, cloudFailedCount, t));
+          } else {
+            setGenerationMessage(t("generationImageInserted", { count: insertedCount }));
+          }
+        } else {
+          setGenerationError(generationFailureMessage(record, t));
+        }
+      } catch (error) {
+        if (controller.signal.aborted || !activeGenerationsRef.current.has(stored.requestId)) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : t("generationErrorDefault");
+        markGenerationPlaceholdersFailed(editor, placeholderSet, message);
+        setGenerationError(message);
+      } finally {
+        if (activeGenerationsRef.current.delete(stored.requestId)) {
+          setActiveGenerationCount(activeGenerationsRef.current.size);
+        }
+        if (activeGenerationsRef.current.size === 0) {
+          setGenerationQueueAhead(null);
+        }
+        clearActiveJobStorage(userId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const fn of cleanupFns) {
+        fn();
+      }
+    };
+  }, [currentUser, isProjectLoaded, isEditorMounted, t]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -2662,6 +2918,7 @@ export function App() {
 
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
+    setIsEditorMounted(true);
     if (!editor.user.getIsSnapMode()) {
       editor.user.updateUserPreferences({ isSnapMode: true });
     }
@@ -2748,6 +3005,7 @@ export function App() {
       }
       if (editorRef.current === editor) {
         editorRef.current = null;
+        setIsEditorMounted(false);
       }
       editor.off("change", updateReferenceSelection);
       removeReferenceStoreListener();
@@ -2875,11 +3133,30 @@ export function App() {
         throw new Error(t("generationInvalidResponse"));
       }
       const jobId = submitBody.jobId;
-      activeGenerationsRef.current.get(requestId)?.controller.signal.addEventListener("abort", () => {
-        void fetch(`/api/images/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }).catch(() => undefined);
-      });
+      // Stash the jobId on the task so user-initiated cancel can call /cancel
+      // explicitly. We deliberately do NOT add an abort-listener that auto-cancels
+      // on the server: a page unmount/refresh aborts the controller too, and
+      // sweeping the server job there destroys the very thing we want to reattach
+      // to. Server-side cancel is now driven only from cancelGeneration().
+      const activeTaskForJobId = activeGenerationsRef.current.get(requestId);
+      if (activeTaskForJobId) {
+        activeTaskForJobId.jobId = jobId;
+      }
 
-      const finalJob = await pollImageJob(jobId, controller.signal);
+      // Persist the in-flight job so a page refresh can rehydrate placeholders
+      // and resume polling instead of losing visual progress.
+      if (currentUser) {
+        writeActiveJobStorage(currentUser.id, {
+          jobId,
+          requestId,
+          temporaryRecordId: temporaryRecord.id,
+          placements: placeholderSet.placements
+        });
+      }
+
+      const finalJob = await pollImageJob(jobId, controller.signal, (job) => {
+        setGenerationQueueAhead(job.status === "pending" ? job.queuePositionApprox ?? null : null);
+      });
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
@@ -2934,6 +3211,12 @@ export function App() {
     } finally {
       if (activeGenerationsRef.current.delete(requestId)) {
         setActiveGenerationCount(activeGenerationsRef.current.size);
+      }
+      if (activeGenerationsRef.current.size === 0) {
+        setGenerationQueueAhead(null);
+      }
+      if (currentUser) {
+        clearActiveJobStorage(currentUser.id);
       }
     }
   }
@@ -3301,6 +3584,14 @@ export function App() {
       return;
     }
 
+    // Tell the server to stop the job — this is the only place we send /cancel.
+    // Aborting the controller stops the local poll/UI but never reaches the
+    // server, which is what makes refresh-then-reattach safe.
+    if (task.jobId) {
+      void fetch(`/api/images/jobs/${encodeURIComponent(task.jobId)}/cancel`, { method: "POST" }).catch(
+        () => undefined
+      );
+    }
     task.controller.abort();
     const editor = editorRef.current;
     if (editor) {
@@ -3309,6 +3600,12 @@ export function App() {
 
     activeGenerationsRef.current.delete(requestId);
     setActiveGenerationCount(activeGenerationsRef.current.size);
+    if (activeGenerationsRef.current.size === 0) {
+      setGenerationQueueAhead(null);
+    }
+    if (currentUser) {
+      clearActiveJobStorage(currentUser.id);
+    }
     setGenerationHistory((history) =>
       history.map((record) =>
         record.id === task.temporaryRecordId ? { ...record, status: "cancelled", error: t("generationUnknownCancel") } : record
