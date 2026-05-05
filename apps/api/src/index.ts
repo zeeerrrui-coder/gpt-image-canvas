@@ -25,11 +25,13 @@ import { listCreditTransactions } from "./credit-history-service.js";
 import { createRedeemCode, deleteRedeemCode, listRedeemCodes, redeemCode } from "./redeem-code-service.js";
 import { getAdminStats, listErrorLogs, recordErrorLog } from "./admin-stats-service.js";
 import {
+  ImageJobError,
   cancelImageJob,
   createImageJob,
+  drainQueue,
   getImageJobView,
-  recoverInterruptedJobs,
-  startImageJob
+  listActiveImageJobs,
+  recoverInterruptedJobs
 } from "./image-job-service.js";
 import {
   checkAuthRateLimit,
@@ -139,6 +141,11 @@ export async function bootstrap(): Promise<void> {
   if (purgedLegacy > 0) {
     console.warn(`Cleared ${purgedLegacy} legacy global storage_configs row(s) (cloud storage is now per-user).`);
   }
+  // Pick up jobs that were left as 'pending' by the previous shutdown.
+  // Must run after recoverInterruptedJobs so any orphaned 'running' rows are
+  // already cleared. Must run before serve() so the in-memory worker set is
+  // primed before the first HTTP request can land.
+  drainQueue();
 }
 
 // Backward-compat: existing tests expect ensureBootstrapAdmin to run on import.
@@ -1020,9 +1027,11 @@ app.post("/api/images/generate", async (c) => {
       payload: parsed.value,
       creditCosts: getCreditCostConfig()
     });
-    startImageJob(job.jobId, user.user.id);
-    return c.json({ jobId: job.jobId, status: "pending", reservedAmount: job.reservedAmount });
+    return c.json({ jobId: job.jobId, reservedAmount: job.reservedAmount });
   } catch (error) {
+    if (error instanceof ImageJobError) {
+      return errorJson(error.code, error.message, error.status);
+    }
     if (error instanceof CreditError) {
       return errorJson(error.code, error.message, error.status);
     }
@@ -1056,9 +1065,11 @@ app.post("/api/images/edit", async (c) => {
       payload: parsed.value,
       creditCosts: getCreditCostConfig()
     });
-    startImageJob(job.jobId, user.user.id);
-    return c.json({ jobId: job.jobId, status: "pending", reservedAmount: job.reservedAmount });
+    return c.json({ jobId: job.jobId, reservedAmount: job.reservedAmount });
   } catch (error) {
+    if (error instanceof ImageJobError) {
+      return errorJson(error.code, error.message, error.status);
+    }
     if (error instanceof CreditError) {
       return errorJson(error.code, error.message, error.status);
     }
@@ -1067,6 +1078,21 @@ app.post("/api/images/edit", async (c) => {
     }
     throw error;
   }
+});
+
+app.get("/api/images/jobs", async (c) => {
+  const user = await requireUser(c);
+  if (!user.ok) {
+    return user.response;
+  }
+  const onlyActive = c.req.query("active") === "true";
+  if (!onlyActive) {
+    // Today only the ?active=true variant is supported. Listing all of a
+    // user's history goes through other endpoints (gallery, etc.).
+    return c.json(errorResponse("invalid_request", "请使用 ?active=true 查询正在进行的任务。"), 400);
+  }
+  const jobs = listActiveImageJobs(user.user.id, (id) => getGenerationRecordById(id, user.user.id));
+  return c.json({ jobs });
 });
 
 app.get("/api/images/jobs/:jobId", async (c) => {
@@ -2332,7 +2358,10 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  void bootstrap();
+  // Await bootstrap (admin seed → interrupted-job recovery → drain pending queue)
+  // BEFORE accepting any HTTP traffic. Otherwise an inbound request that lands
+  // mid-recovery can have its newly-running job swept by recoverInterruptedJobs.
+  await bootstrap();
   const server = serve(
     {
       fetch: app.fetch,

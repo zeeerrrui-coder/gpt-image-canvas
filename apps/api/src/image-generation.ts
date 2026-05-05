@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import sharp from "sharp";
 import type {
   AssetMetadataResponse,
@@ -30,13 +30,66 @@ import {
   type CosAssetLocation
 } from "./asset-storage.js";
 import { runtimePaths } from "./runtime.js";
-import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "./schema.js";
+import { assets, generationOutputs, generationRecords, generationReferenceAssets, imageGenerationJobs } from "./schema.js";
 import { getActiveCosStorageConfigForUser } from "./storage-config.js";
 
 const BATCH_CONCURRENCY = 4;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+const PER_IMAGE_TIMEOUT_MS = parsePositiveEnvInt(process.env.PER_IMAGE_TIMEOUT_MS, 12 * 60 * 1000);
 const localAssetStorage = new LocalAssetStorageAdapter();
+
+function parsePositiveEnvInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Wrap an upstream provider call with a per-image watchdog. If the call doesn't
+ * settle within PER_IMAGE_TIMEOUT_MS, abort it and reject with a timeout error.
+ *
+ * Why this exists (codex finding #9): job-level abort doesn't help if the SDK or
+ * underlying fetch never resolves — Promise.race lets us bail without leaking
+ * memory or holding a worker slot indefinitely.
+ *
+ * The local controller forwards the parent signal so a real user cancel still
+ * propagates. Caller's catch should distinguish "parent aborted" (re-throw) from
+ * "local timeout" (soft-fail this image, let others continue).
+ */
+async function callWithImageTimeout<T>(
+  parentSignal: AbortSignal | undefined,
+  call: (perImageSignal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const localController = new AbortController();
+  let parentAbortHandler: (() => void) | undefined;
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      localController.abort();
+    } else {
+      parentAbortHandler = (): void => localController.abort();
+      parentSignal.addEventListener("abort", parentAbortHandler, { once: true });
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      localController.abort();
+      reject(new Error(`单张图像生成超过 ${Math.round(PER_IMAGE_TIMEOUT_MS / 1000)} 秒未完成。`));
+    }, PER_IMAGE_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([call(localController.signal), timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (parentAbortHandler && parentSignal) {
+      parentSignal.removeEventListener("abort", parentAbortHandler);
+    }
+  }
+}
 
 interface StoredAssetFile {
   id: string;
@@ -84,38 +137,46 @@ const mimeTypes: Record<OutputFormat, string> = {
   webp: "image/webp"
 };
 
+export interface RunImageGenerationResult extends GenerationResponse {
+  // True if the optional jobFinalize UPDATE in saveGenerationRecord changed the
+  // job row. False only in the (extremely unlikely under single-threaded Node)
+  // race where a cancel finalised the job between the provider calls and the
+  // record insert. Callers use this to decide whether to refund unused credits;
+  // if false, the cancel path already refunded the whole reservation.
+  jobFinalized: boolean;
+}
+
 export async function runTextToImageGeneration(
   input: ImageProviderInput,
   provider: ImageProvider,
   userId: string,
-  signal?: AbortSignal
-): Promise<GenerationResponse> {
+  signal?: AbortSignal,
+  jobFinalize?: { jobId: string }
+): Promise<RunImageGenerationResult> {
   const outputs = await mapWithConcurrency(
     Array.from({ length: input.count }, (_, index) => index),
     BATCH_CONCURRENCY,
     async () => generateSingleOutput(input, provider, userId, signal)
   );
 
-  const record = saveGenerationRecord(
+  return saveGenerationRecord(
     {
       ...input,
       mode: "generate",
       userId
     },
-    outputs
+    outputs,
+    jobFinalize
   );
-
-  return {
-    record
-  };
 }
 
 export async function runReferenceImageGeneration(
   input: EditImageProviderInput,
   provider: ImageProvider,
   userId: string,
-  signal?: AbortSignal
-): Promise<GenerationResponse> {
+  signal?: AbortSignal,
+  jobFinalize?: { jobId: string }
+): Promise<RunImageGenerationResult> {
   const referenceAssetIds = await ensureReferenceAssetIds(input, userId);
   const inputWithReferenceAssets: EditImageProviderInput = {
     ...input,
@@ -129,18 +190,15 @@ export async function runReferenceImageGeneration(
     async () => editSingleOutput(inputWithReferenceAssets, provider, userId, signal)
   );
 
-  const record = saveGenerationRecord(
+  return saveGenerationRecord(
     {
       ...inputWithReferenceAssets,
       mode: "edit",
       userId
     },
-    outputs
+    outputs,
+    jobFinalize
   );
-
-  return {
-    record
-  };
 }
 
 async function ensureReferenceAssetIds(input: EditImageProviderInput, userId: string): Promise<string[]> {
@@ -322,12 +380,8 @@ async function generateSingleOutput(
 
   try {
     throwIfAborted(signal);
-    const result = await provider.generate(
-      {
-        ...input,
-        count: 1
-      },
-      signal
+    const result = await callWithImageTimeout(signal, (perImageSignal) =>
+      provider.generate({ ...input, count: 1 }, perImageSignal)
     );
     throwIfAborted(signal);
 
@@ -345,7 +399,10 @@ async function generateSingleOutput(
       cloudStorage: saved.cloudStorage
     };
   } catch (error) {
-    if (isAbortError(error) || signal?.aborted) {
+    // Only re-throw if the parent (job) signal was aborted — that's a real user
+    // cancel and other workers in the same job should stop too. Local-timeout
+    // AbortErrors must NOT propagate; they're a per-image soft failure.
+    if (signal?.aborted) {
       throw error;
     }
 
@@ -367,12 +424,8 @@ async function editSingleOutput(
 
   try {
     throwIfAborted(signal);
-    const result = await provider.edit(
-      {
-        ...input,
-        count: 1
-      },
-      signal
+    const result = await callWithImageTimeout(signal, (perImageSignal) =>
+      provider.edit({ ...input, count: 1 }, perImageSignal)
     );
     throwIfAborted(signal);
 
@@ -390,7 +443,7 @@ async function editSingleOutput(
       cloudStorage: saved.cloudStorage
     };
   } catch (error) {
-    if (isAbortError(error) || signal?.aborted) {
+    if (signal?.aborted) {
       throw error;
     }
 
@@ -459,7 +512,11 @@ async function readImageSize(bytes: Buffer): Promise<ImageSize | undefined> {
   }
 }
 
-function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
+function saveGenerationRecord(
+  input: PersistedGenerationInput,
+  outputs: BatchOutputResult[],
+  jobFinalize?: { jobId: string }
+): RunImageGenerationResult {
   const createdAt = new Date().toISOString();
   const generationId = randomUUID();
   const successCount = outputs.filter((output) => output.status === "succeeded").length;
@@ -469,6 +526,8 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
 
   const referenceAssetIds = input.referenceAssetIds ?? (input.referenceAssetId ? [input.referenceAssetId] : []);
   const primaryReferenceAssetId = referenceAssetIds[0] ?? input.referenceAssetId;
+
+  let jobFinalized = false;
 
   db.transaction((tx) => {
     tx.insert(generationRecords)
@@ -538,24 +597,52 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
         })
         .run();
     }
+
+    // Atomically transition the in-flight job to its terminal state in the
+    // same transaction that inserted the record. This closes the broken
+    // invariant codex flagged: a crash between record-insert and job-finish
+    // can no longer leave a successful gallery entry while recovery refunds
+    // the job.
+    if (jobFinalize) {
+      const result = tx
+        .update(imageGenerationJobs)
+        .set({
+          status,
+          generationRecordId: generationId,
+          errorCode: error ? "generation_error" : null,
+          errorMessage: error ?? null,
+          updatedAt: createdAt
+        })
+        .where(
+          and(
+            eq(imageGenerationJobs.id, jobFinalize.jobId),
+            inArray(imageGenerationJobs.status, ["pending", "running"])
+          )
+        )
+        .run();
+      jobFinalized = result.changes > 0;
+    }
   });
 
   return {
-    id: generationId,
-    mode: input.mode,
-    prompt: input.originalPrompt,
-    effectivePrompt: input.prompt,
-    presetId: input.presetId,
-    size: input.size,
-    quality: input.quality,
-    outputFormat: input.outputFormat,
-    count: input.count,
-    status,
-    error,
-    referenceAssetIds: referenceAssetIds.length > 0 ? referenceAssetIds : undefined,
-    referenceAssetId: primaryReferenceAssetId,
-    createdAt,
-    outputs: outputs.map(toGenerationOutput)
+    record: {
+      id: generationId,
+      mode: input.mode,
+      prompt: input.originalPrompt,
+      effectivePrompt: input.prompt,
+      presetId: input.presetId,
+      size: input.size,
+      quality: input.quality,
+      outputFormat: input.outputFormat,
+      count: input.count,
+      status,
+      error,
+      referenceAssetIds: referenceAssetIds.length > 0 ? referenceAssetIds : undefined,
+      referenceAssetId: primaryReferenceAssetId,
+      createdAt,
+      outputs: outputs.map(toGenerationOutput)
+    },
+    jobFinalized
   };
 }
 
